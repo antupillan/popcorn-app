@@ -13,17 +13,36 @@ use librqbit::Session;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
+use super::embedded_rqbit::HttpFallbackMap;
+
+#[derive(Clone)]
+struct AppState {
+    session: Arc<Session>,
+    http_fallback: HttpFallbackMap,
+    http_client: reqwest::Client,
+}
+
 /// Minimal local HTTP server so the frontend `<video>` tag can request byte
 /// ranges from a torrent that's still downloading — librqbit's FileStream
 /// blocks reads until the relevant piece has arrived, so this is real
-/// progressive playback, not a pre-buffered file.
-pub async fn spawn(session: Arc<Session>) -> anyhow::Result<u16> {
+/// progressive playback, not a pre-buffered file. Also proxies to a direct
+/// HTTP source when one was registered as a fallback (see
+/// TorrentEngine::register_http_fallback) — same Range semantics either way,
+/// so the frontend never needs to know which path served a given torrent.
+pub async fn spawn(session: Arc<Session>, http_fallback: HttpFallbackMap) -> anyhow::Result<u16> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
 
+    let state = AppState {
+        session,
+        http_fallback,
+        http_client: reqwest::Client::new(),
+    };
+
     let app = Router::new()
         .route("/stream/{torrent_id}/{file_idx}", get(stream_handler))
-        .with_state(session);
+        .route("/proxy/{torrent_id}", get(proxy_handler))
+        .with_state(state);
 
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -53,11 +72,11 @@ fn parse_range(headers: &HeaderMap) -> Option<ByteRange> {
 }
 
 async fn stream_handler(
-    State(session): State<Arc<Session>>,
+    State(state): State<AppState>,
     Path((torrent_id, file_idx)): Path<(usize, usize)>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(handle) = session.get(TorrentIdOrHash::Id(torrent_id)) else {
+    let Some(handle) = state.session.get(TorrentIdOrHash::Id(torrent_id)) else {
         return (StatusCode::NOT_FOUND, "torrent not found").into_response();
     };
 
@@ -99,6 +118,47 @@ async fn stream_handler(
         );
     }
 
+    response.body(body).unwrap().into_response()
+}
+
+/// Sirve un torrent vía HTTP directo en vez de P2P (ver
+/// TorrentEngine::register_http_fallback) — reenvía el header Range tal
+/// cual al origen y devuelve su respuesta (200/206/416) sin modificarla,
+/// más allá de streamear el cuerpo en vez de bufferizarlo entero.
+async fn proxy_handler(
+    State(state): State<AppState>,
+    Path(torrent_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(url) = state.http_fallback.lock().unwrap().get(&torrent_id).cloned() else {
+        return (StatusCode::NOT_FOUND, "no hay fallback HTTP registrado para este torrent")
+            .into_response();
+    };
+
+    let mut req = state.http_client.get(&url);
+    if let Some(range) = headers.get(axum::http::header::RANGE) {
+        req = req.header(axum::http::header::RANGE, range.clone());
+    }
+
+    let upstream = match req.send().await {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    };
+
+    let status = upstream.status();
+    let mut response = Response::builder().status(status);
+    for header in [
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::CONTENT_LENGTH,
+        axum::http::header::CONTENT_RANGE,
+        axum::http::header::ACCEPT_RANGES,
+    ] {
+        if let Some(v) = upstream.headers().get(&header) {
+            response = response.header(header, v.clone());
+        }
+    }
+
+    let body = Body::from_stream(upstream.bytes_stream());
     response.body(body).unwrap().into_response()
 }
 

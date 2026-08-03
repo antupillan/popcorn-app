@@ -44,6 +44,56 @@ pub async fn search(client: &reqwest::Client, query: &str) -> anyhow::Result<Vec
     Ok(resp.response.docs)
 }
 
+#[derive(Deserialize)]
+struct MetadataResponse {
+    files: Vec<MetadataFile>,
+}
+
+#[derive(Deserialize)]
+struct MetadataFile {
+    name: String,
+    format: Option<String>,
+}
+
+const PLAYABLE_FORMATS: &[&str] = &["h.264", "512kb mp4", "mpeg4"];
+
+/// Fallback HTTP directo (ver TorrentEngine::register_http_fallback): la
+/// mayoría de los .torrent de archive.org dependen de webseeds BEP19 que
+/// librqbit no soporta (upstream: ikatson/rqbit#500), así que se resuelve
+/// el archivo reproducible real vía la API de metadata pública y se
+/// construye su URL de descarga directa, que sí soporta Range de forma
+/// nativa (verificado contra la API en vivo).
+pub async fn primary_video_file(
+    client: &reqwest::Client,
+    identifier: &str,
+) -> anyhow::Result<String> {
+    let url = format!("https://archive.org/metadata/{identifier}");
+    let meta: MetadataResponse = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("no se pudo consultar {url}"))?
+        .json()
+        .await
+        .context("metadata de archive.org con formato inesperado")?;
+
+    let file = meta
+        .files
+        .iter()
+        .find(|f| {
+            f.format
+                .as_deref()
+                .map(|fmt| PLAYABLE_FORMATS.contains(&fmt.to_lowercase().as_str()))
+                .unwrap_or(false)
+        })
+        .context("no se encontró un archivo de video reproducible en el ítem")?;
+
+    Ok(format!(
+        "https://archive.org/download/{identifier}/{}",
+        file.name
+    ))
+}
+
 /// Descarga el .torrent público del ítem. archive.org redirige (302) al
 /// datanode real que lo sirve — reqwest sigue redirects por defecto.
 pub async fn fetch_torrent_bytes(

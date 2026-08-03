@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -7,6 +8,8 @@ use librqbit::{AddTorrent, Session, TorrentStatsState};
 
 use super::{AddTorrentSource, TorrentEngine, TorrentInfo};
 
+pub type HttpFallbackMap = Arc<Mutex<HashMap<String, String>>>;
+
 /// Default TorrentEngine: librqbit embedded directly as a Rust dependency,
 /// no sidecar process, no HTTP API of its own exposed. This is the engine
 /// that actually downloads bytes; ExternalQbittorrent/ExternalTransmission
@@ -14,6 +17,7 @@ use super::{AddTorrentSource, TorrentEngine, TorrentInfo};
 pub struct EmbeddedRqbit {
     session: Arc<Session>,
     stream_port: u16,
+    http_fallback: HttpFallbackMap,
 }
 
 impl EmbeddedRqbit {
@@ -21,12 +25,14 @@ impl EmbeddedRqbit {
         let session = Session::new(download_dir)
             .await
             .context("no se pudo iniciar la sesión de librqbit")?;
-        let stream_port = super::stream_server::spawn(session.clone())
+        let http_fallback: HttpFallbackMap = Arc::new(Mutex::new(HashMap::new()));
+        let stream_port = super::stream_server::spawn(session.clone(), http_fallback.clone())
             .await
             .context("no se pudo levantar el servidor de streaming local")?;
         Ok(Self {
             session,
             stream_port,
+            http_fallback,
         })
     }
 }
@@ -76,10 +82,28 @@ impl TorrentEngine for EmbeddedRqbit {
         // Valida que el torrent exista antes de devolver una URL que
         // apuntaría a un 404 — falla temprano en vez de silencioso.
         self.get_handle(id)?;
+
+        // Si hay un fallback HTTP registrado (fuentes tipo archive.org que
+        // dependen de webseeds que librqbit no soporta), servir por ahí en
+        // vez de por P2P — el torrent sigue descargando/sembrando en
+        // segundo plano igual, esto sólo decide de dónde lee el reproductor.
+        let has_fallback = self.http_fallback.lock().unwrap().contains_key(id);
+        if has_fallback {
+            return Ok(format!("http://127.0.0.1:{}/proxy/{id}", self.stream_port));
+        }
+
         Ok(format!(
             "http://127.0.0.1:{}/stream/{id}/{file_idx}",
             self.stream_port
         ))
+    }
+
+    async fn register_http_fallback(&self, id: &str, url: String) -> anyhow::Result<()> {
+        self.http_fallback
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), url);
+        Ok(())
     }
 }
 
@@ -102,14 +126,18 @@ mod e2e {
     use crate::sources::archive_org;
 
     /// Verificación real de extremo a extremo del backend (Tarea 9 del
-    /// plan): agrega un torrent real de archive.org (dominio público,
-    /// `turner_video_444` — Night of the Living Dead, 1968) y confirma
-    /// descarga real (no simulada) más streaming HTTP con Range.
-    /// Depende de red/swarm reales — no determinista por naturaleza; si el
-    /// swarm no responde en la ventana de esta prueba, falla honestamente
-    /// en vez de fingir éxito.
+    /// plan, actualizada tras diagnosticar la Tarea de fallback HTTP):
+    /// agrega un torrent real de archive.org (dominio público,
+    /// `turner_video_444` — Night of the Living Dead, 1968), registra el
+    /// fallback HTTP (su .torrent depende de webseeds BEP19 que librqbit
+    /// no soporta — ikatson/rqbit#500, confirmado con el test de control
+    /// de Ubuntu: el motor y la red funcionan, este source específico no)
+    /// y confirma streaming real con Range contra ese fallback.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "red real + swarm BitTorrent real, no apto para CI por defecto"]
+    #[ignore = "red real, no apto para CI por defecto; correr con --test-threads=1 \
+                si se ejecuta junto a otro test de este módulo (cada uno abre una \
+                sesión DHT real y pueden colisionar de puerto entre sí — nunca \
+                ocurre en la app real, que solo abre una sesión)"]
     async fn add_real_archive_org_torrent_and_stream_it() {
         let tmp = tempdir();
         let engine = EmbeddedRqbit::new(tmp.clone()).await.expect("crear sesión");
@@ -129,45 +157,24 @@ mod e2e {
             .expect("agregar torrent al motor");
         println!("[e2e] torrent agregado: id={} name={:?}", info.id, info.name);
 
-        // Diagnóstico: ¿hay peers conectados? Si esto queda siempre en 0,
-        // es un problema de red del entorno (egress bloqueado), no del
-        // motor. Se imprime aparte porque TorrentStats no expone esto vía
-        // el trait TorrentEngine (es deliberadamente delgado).
-        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-        if let Ok(handle) = engine.get_handle(&info.id) {
-            println!("[e2e][diag] live stats: {:#?}", handle.stats().live);
-        }
+        let fallback_url = archive_org::primary_video_file(&http, "turner_video_444")
+            .await
+            .expect("resolver archivo reproducible en metadata de archive.org");
+        println!("[e2e] fallback HTTP: {fallback_url}");
+        TorrentEngine::register_http_fallback(&engine, &info.id, fallback_url)
+            .await
+            .expect("registrar fallback");
 
-        // Espera bytes reales de progreso, no sólo metadata. 90s: piezas de
-        // archive.org suelen ser rápidas, pero es red real, no un mock.
-        let saw_progress = tokio::time::timeout(std::time::Duration::from_secs(75), async {
-            loop {
-                let list = TorrentEngine::list(&engine).await.expect("list");
-                let t = list.iter().find(|t| t.id == info.id).expect("torrent en la lista");
-                println!(
-                    "[e2e] estado={} progreso={}/{} bytes error={:?}",
-                    t.state, t.progress_bytes, t.total_bytes, t.error
-                );
-                if t.progress_bytes > 0 {
-                    return true;
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            }
-        })
-        .await
-        .unwrap_or(false);
-
-        assert!(
-            saw_progress,
-            "no se observaron bytes de descarga real en 90s — revisar conectividad \
-             del sandbox al swarm BitTorrent antes de asumir que el motor funciona"
-        );
-
-        // Streaming: pide el archivo 0 sin Range (200) y con Range (206),
-        // contra el propio HTTP server local, no un mock.
+        // Streaming: pide el archivo sin Range (200) y con Range (206),
+        // contra el propio HTTP server local, que a su vez reenvía al
+        // fallback — no es un mock, son bytes reales de archive.org.
         let url = TorrentEngine::stream_url(&engine, &info.id, 0)
             .await
             .expect("stream_url");
+        assert!(
+            url.contains("/proxy/"),
+            "con fallback registrado, stream_url debe apuntar a /proxy/, no a /stream/: {url}"
+        );
         println!("[e2e] stream url: {url}");
 
         let full = http.get(&url).send().await.expect("request sin range");

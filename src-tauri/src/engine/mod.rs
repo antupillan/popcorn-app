@@ -38,4 +38,15 @@ pub trait TorrentEngine: Send + Sync {
     async fn remove(&self, id: &str, delete_files: bool) -> anyhow::Result<()>;
     /// Local HTTP URL the frontend `<video>` can point at with Range support.
     async fn stream_url(&self, id: &str, file_idx: usize) -> anyhow::Result<String>;
+
+    /// Optional capability: register a direct HTTP source to serve reads
+    /// from when pure P2P won't deliver bytes (e.g. archive.org items that
+    /// rely on BEP19 webseeds, which librqbit doesn't implement — see
+    /// ikatson/rqbit#500). No-op by default; only EmbeddedRqbit needs this.
+    /// This is a v1 stopgap (prefer-HTTP-when-registered), not real BEP19
+    /// piece-level mixing with P2P — that's tracked as a future paid-tier
+    /// feature per the plan.
+    async fn register_http_fallback(&self, _id: &str, _url: String) -> anyhow::Result<()> {
+        Ok(())
+    }
 }

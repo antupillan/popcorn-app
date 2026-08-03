@@ -90,6 +90,18 @@ pub async fn add_archive_org_item(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Fallback HTTP: la mayoría de los .torrent de archive.org dependen de
+    // webseeds (BEP19) que librqbit no soporta (ver Tarea 9 de verificación
+    // E2E). Si no se puede resolver un archivo reproducible, no es fatal —
+    // el torrent sigue agregado y puede eventualmente completar por P2P.
+    if let Ok(url) = archive_org::primary_video_file(&http.0, &identifier).await {
+        engine
+            .0
+            .register_http_fallback(&info.id, url)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
     let media_id = uuid::Uuid::new_v4().to_string();
     {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
