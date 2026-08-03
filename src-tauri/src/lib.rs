@@ -1,11 +1,12 @@
 mod commands;
 mod db;
 mod engine;
+mod sources;
 
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
-use commands::EngineState;
+use commands::{EngineState, HttpClient};
 use engine::embedded_rqbit::EmbeddedRqbit;
 use engine::TorrentEngine;
 
@@ -21,6 +22,7 @@ pub fn run() {
             std::fs::create_dir_all(&downloads_dir)?;
             let embedded = tauri::async_runtime::block_on(EmbeddedRqbit::new(downloads_dir))?;
             app.manage(EngineState(Arc::new(embedded) as Arc<dyn TorrentEngine>));
+            app.manage(HttpClient(reqwest::Client::new()));
 
             Ok(())
         })
@@ -29,6 +31,8 @@ pub fn run() {
             commands::list_torrents,
             commands::pause_torrent,
             commands::remove_torrent,
+            commands::search_archive_org,
+            commands::add_archive_org_item,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
