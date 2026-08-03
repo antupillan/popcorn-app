@@ -34,6 +34,8 @@ pub fn run() {
             commands::get_stream_url,
             commands::search_archive_org,
             commands::add_archive_org_item,
+            commands::list_media_items,
+            commands::add_torrent_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

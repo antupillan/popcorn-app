@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use serde::Serialize;
 use tauri::State;
 
 use crate::db::Db;
@@ -8,6 +9,65 @@ use crate::sources::archive_org::{self, ArchiveOrgItem};
 
 pub struct EngineState(pub Arc<dyn TorrentEngine>);
 pub struct HttpClient(pub reqwest::Client);
+
+#[derive(Serialize)]
+pub struct MediaItem {
+    pub id: String,
+    pub source_type: String,
+    pub source_identifier: String,
+    pub title: String,
+    pub year: Option<i64>,
+    pub license: Option<String>,
+    pub engine_torrent_id: Option<String>,
+    pub is_private: bool,
+    pub added_at: String,
+}
+
+/// Biblioteca local (media_items) — distinta de list_torrents: esto es lo
+/// que el usuario ve como "su colección", el motor puede tener entradas
+/// transitorias que nunca llegan a ser un media_item (ver Fase 1 del plan).
+#[tauri::command]
+pub async fn list_media_items(db: State<'_, Db>) -> Result<Vec<MediaItem>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, source_type, source_identifier, title, year, license, \
+             engine_torrent_id, is_private, added_at FROM media_items ORDER BY added_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(MediaItem {
+                id: r.get(0)?,
+                source_type: r.get(1)?,
+                source_identifier: r.get(2)?,
+                title: r.get(3)?,
+                year: r.get(4)?,
+                license: r.get(5)?,
+                engine_torrent_id: r.get(6)?,
+                is_private: r.get::<_, i64>(7)? != 0,
+                added_at: r.get(8)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// Agrega un torrent a partir de bytes de archivo .torrent subidos por el
+/// usuario (tab "Subir .torrent" del modal unificado) — no crea fila en
+/// media_items porque no hay metadata de catálogo asociada, a diferencia
+/// de add_archive_org_item.
+#[tauri::command]
+pub async fn add_torrent_file(
+    engine: State<'_, EngineState>,
+    bytes: Vec<u8>,
+) -> Result<TorrentInfo, String> {
+    engine
+        .0
+        .add(AddTorrentSource::TorrentBytes(bytes))
+        .await
+        .map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 pub async fn add_torrent(

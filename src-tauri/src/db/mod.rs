@@ -23,6 +23,20 @@ const MIGRATIONS: &[&str] = &[
         added_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     "#,
+    r#"
+    -- Sin filas semilla: la app nunca lista ni recomienda indexers de
+    -- contenido con copyright (ver plan, blindaje legal). El usuario agrega
+    -- los suyos manualmente, uno por uno.
+    CREATE TABLE indexers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        search_url_template TEXT NOT NULL,
+        result_format TEXT NOT NULL CHECK (result_format IN ('magnet_list', 'rss', 'json')),
+        json_paths TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    "#,
 ];
 
 fn db_path(app: &AppHandle) -> Result<PathBuf> {
@@ -90,5 +104,27 @@ mod tests {
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version as usize, MIGRATIONS.len());
+    }
+
+    #[test]
+    fn indexers_table_has_no_seed_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM indexers", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "indexers no debe traer filas precargadas — blindaje legal");
+
+        conn.execute(
+            "INSERT INTO indexers (id, name, search_url_template, result_format) \
+             VALUES ('1', 'Mi indexer', 'https://example.org/search?q={query}', 'magnet_list')",
+            [],
+        )
+        .unwrap();
+        let enabled: i64 = conn
+            .query_row("SELECT enabled FROM indexers WHERE id = '1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(enabled, 1, "enabled debe tener default 1");
     }
 }
