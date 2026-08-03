@@ -1,7 +1,13 @@
+mod commands;
 mod db;
+mod engine;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
+
+use commands::EngineState;
+use engine::embedded_rqbit::EmbeddedRqbit;
+use engine::TorrentEngine;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -10,9 +16,20 @@ pub fn run() {
         .setup(|app| {
             let conn = db::open(app.handle())?;
             app.manage(db::Db(Mutex::new(conn)));
+
+            let downloads_dir = app.path().app_data_dir()?.join("downloads");
+            std::fs::create_dir_all(&downloads_dir)?;
+            let embedded = tauri::async_runtime::block_on(EmbeddedRqbit::new(downloads_dir))?;
+            app.manage(EngineState(Arc::new(embedded) as Arc<dyn TorrentEngine>));
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![])
+        .invoke_handler(tauri::generate_handler![
+            commands::add_torrent,
+            commands::list_torrents,
+            commands::pause_torrent,
+            commands::remove_torrent,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
