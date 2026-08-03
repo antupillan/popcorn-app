@@ -149,10 +149,12 @@ pub async fn search_indexers(
                  FROM indexers WHERE enabled = 1",
             )
             .map_err(|e| e.to_string())?;
-        stmt.query_map([], row_to_indexer)
+        let rows = stmt
+            .query_map([], row_to_indexer)
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        rows
     };
 
     let mut all = Vec::new();
@@ -191,4 +193,34 @@ async fn search_one(
         r.source_indexer = indexer.name.clone();
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "red real, no apto para CI por defecto — correr manualmente para verificar contra un indexer BYO real"]
+    async fn search_one_against_real_nyaa_rss_returns_real_results() {
+        let client = reqwest::Client::new();
+        let indexer = Indexer {
+            id: "test".to_string(),
+            name: "Nyaa (test)".to_string(),
+            search_url_template: "https://nyaa.si/?page=rss&c=1_2&f=0&q={query}".to_string(),
+            result_format: "rss".to_string(),
+            json_paths: None,
+            enabled: true,
+        };
+
+        let results = search_one(&client, &indexer, "one piece")
+            .await
+            .expect("nyaa.si debe responder con un feed RSS parseable");
+
+        assert!(!results.is_empty(), "una query popular no debería devolver cero resultados");
+        for r in &results {
+            assert!(r.magnet.starts_with("magnet:?xt=urn:btih:"));
+            assert!(!r.title.is_empty());
+            assert_eq!(r.source_indexer, "Nyaa (test)");
+        }
+    }
 }

@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod engine;
+mod indexers;
 mod sources;
 
 use std::sync::{Arc, Mutex};
@@ -36,6 +37,12 @@ pub fn run() {
             commands::add_archive_org_item,
             commands::list_media_items,
             commands::add_torrent_file,
+            indexers::list_indexers,
+            indexers::add_indexer,
+            indexers::remove_indexer,
+            indexers::toggle_indexer,
+            indexers::test_indexer,
+            indexers::search_indexers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
