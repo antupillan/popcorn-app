@@ -1,4 +1,5 @@
 pub mod embedded_rqbit;
+mod stream_server;
 
 use async_trait::async_trait;
 use serde::Serialize;

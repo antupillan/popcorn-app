@@ -13,6 +13,7 @@ use super::{AddTorrentSource, TorrentEngine, TorrentInfo};
 /// (later) instead orchestrate a client the user already runs.
 pub struct EmbeddedRqbit {
     session: Arc<Session>,
+    stream_port: u16,
 }
 
 impl EmbeddedRqbit {
@@ -20,7 +21,13 @@ impl EmbeddedRqbit {
         let session = Session::new(download_dir)
             .await
             .context("no se pudo iniciar la sesión de librqbit")?;
-        Ok(Self { session })
+        let stream_port = super::stream_server::spawn(session.clone())
+            .await
+            .context("no se pudo levantar el servidor de streaming local")?;
+        Ok(Self {
+            session,
+            stream_port,
+        })
     }
 }
 
@@ -65,8 +72,14 @@ impl TorrentEngine for EmbeddedRqbit {
             .await
     }
 
-    async fn stream_url(&self, _id: &str, _file_idx: usize) -> anyhow::Result<String> {
-        anyhow::bail!("stream_url todavía no implementado — pendiente el servidor HTTP local")
+    async fn stream_url(&self, id: &str, file_idx: usize) -> anyhow::Result<String> {
+        // Valida que el torrent exista antes de devolver una URL que
+        // apuntaría a un 404 — falla temprano en vez de silencioso.
+        self.get_handle(id)?;
+        Ok(format!(
+            "http://127.0.0.1:{}/stream/{id}/{file_idx}",
+            self.stream_port
+        ))
     }
 }
 

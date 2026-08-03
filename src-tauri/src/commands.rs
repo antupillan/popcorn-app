@@ -45,6 +45,19 @@ pub async fn remove_torrent(
 }
 
 #[tauri::command]
+pub async fn get_stream_url(
+    engine: State<'_, EngineState>,
+    id: String,
+    file_idx: usize,
+) -> Result<String, String> {
+    engine
+        .0
+        .stream_url(&id, file_idx)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn search_archive_org(
     http: State<'_, HttpClient>,
     query: String,

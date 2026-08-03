@@ -31,6 +31,7 @@ pub fn run() {
             commands::list_torrents,
             commands::pause_torrent,
             commands::remove_torrent,
+            commands::get_stream_url,
             commands::search_archive_org,
             commands::add_archive_org_item,
         ])
