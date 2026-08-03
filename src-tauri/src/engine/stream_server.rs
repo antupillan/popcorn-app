@@ -101,3 +101,38 @@ async fn stream_handler(
 
     response.body(body).unwrap().into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_with_range(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(axum::http::header::RANGE, value.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn parses_bounded_range() {
+        let r = parse_range(&headers_with_range("bytes=0-1023")).unwrap();
+        assert_eq!(r.start, 0);
+        assert_eq!(r.end, Some(1023));
+    }
+
+    #[test]
+    fn parses_open_ended_range() {
+        let r = parse_range(&headers_with_range("bytes=500-")).unwrap();
+        assert_eq!(r.start, 500);
+        assert_eq!(r.end, None);
+    }
+
+    #[test]
+    fn rejects_malformed_range() {
+        assert!(parse_range(&headers_with_range("not-a-range")).is_none());
+    }
+
+    #[test]
+    fn no_range_header_returns_none() {
+        assert!(parse_range(&HeaderMap::new()).is_none());
+    }
+}
