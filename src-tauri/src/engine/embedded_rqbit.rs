@@ -188,6 +188,59 @@ mod e2e {
         assert_eq!(body.len(), 1024, "el cuerpo debe traer exactamente los 1024 bytes pedidos");
     }
 
+    /// Diagnóstico de control: ¿es P2P en general lo que no conecta, o es
+    /// específico de archive.org (que depende de webseeds BEP19, no
+    /// soportados por librqbit — ver .torrent url-list de turner_video_444)?
+    /// Ubuntu tiene uno de los swarms BitTorrent más sanos que existen —
+    /// si esto tampoco conecta peers, el problema es de red/entorno, no de
+    /// archive.org específicamente.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "red real + swarm BitTorrent real, no apto para CI por defecto"]
+    async fn control_ubuntu_torrent_gets_real_peers() {
+        let tmp = tempdir();
+        let engine = EmbeddedRqbit::new(tmp.clone()).await.expect("crear sesión");
+
+        let http = reqwest::Client::new();
+        let torrent_bytes = http
+            .get("https://releases.ubuntu.com/26.04/ubuntu-26.04-desktop-amd64.iso.torrent")
+            .send()
+            .await
+            .expect("descargar .torrent de ubuntu.com")
+            .bytes()
+            .await
+            .expect("leer bytes")
+            .to_vec();
+
+        let info = TorrentEngine::add(&engine, AddTorrentSource::TorrentBytes(torrent_bytes))
+            .await
+            .expect("agregar torrent al motor");
+        println!("[control] torrent agregado: id={} name={:?}", info.id, info.name);
+
+        let saw_live_peer = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            loop {
+                if let Ok(handle) = engine.get_handle(&info.id) {
+                    if let Some(live) = handle.stats().live {
+                        println!("[control][diag] peer_stats: {:?}", live.snapshot.peer_stats);
+                        if live.snapshot.peer_stats.live > 0 {
+                            return true;
+                        }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+        })
+        .await
+        .unwrap_or(false);
+
+        assert!(
+            saw_live_peer,
+            "ni siquiera el swarm de Ubuntu (miles de peers reales) logró una \
+             conexión P2P viva en 60s — esto apunta a un bloqueo de red del \
+             entorno (egress a puertos altos), no a un problema específico \
+             de archive.org/webseeds"
+        );
+    }
+
     fn tempdir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("popcorn-e2e-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
