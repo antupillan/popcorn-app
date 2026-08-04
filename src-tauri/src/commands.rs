@@ -120,9 +120,19 @@ pub async fn get_stream_url(
 #[tauri::command]
 pub async fn search_archive_org(
     http: State<'_, HttpClient>,
+    db: State<'_, Db>,
     query: String,
 ) -> Result<Vec<ArchiveOrgItem>, String> {
-    archive_org::search(&http.0, &query)
+    let mediatype_filter: Option<String> = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT mediatype_filter FROM source_settings WHERE id = 'archive_org'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    archive_org::search(&http.0, &query, mediatype_filter.as_deref())
         .await
         .map_err(|e| e.to_string())
 }

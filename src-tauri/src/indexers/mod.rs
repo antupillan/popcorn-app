@@ -89,6 +89,10 @@ pub async fn add_indexer(
             (&id, &name, &search_url_template, &result_format, &json_paths_raw),
         )
         .map_err(|e| e.to_string())?;
+        // Toda fuente de búsqueda necesita su fila de curación (ver
+        // source_settings) — sin esto, list_source_settings no la lista.
+        conn.execute("INSERT INTO source_settings (id) VALUES (?1)", [&id])
+            .map_err(|e| e.to_string())?;
     }
     Ok(Indexer {
         id,
@@ -104,6 +108,10 @@ pub async fn add_indexer(
 pub async fn remove_indexer(db: State<'_, Db>, id: String) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM indexers WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    // source_settings no tiene FK real a indexers (ver migración) — el
+    // borrado en cascada se hace a mano acá.
+    conn.execute("DELETE FROM source_settings WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
     Ok(())
 }

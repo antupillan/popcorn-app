@@ -1,3 +1,4 @@
+mod ai;
 mod commands;
 mod db;
 mod engine;
@@ -43,6 +44,13 @@ pub fn run() {
             indexers::toggle_indexer,
             indexers::test_indexer,
             indexers::search_indexers,
+            ai::commands::list_ai_providers,
+            ai::commands::add_ai_provider,
+            ai::commands::remove_ai_provider,
+            ai::commands::set_active_ai_provider,
+            ai::commands::parse_query,
+            sources::settings::list_source_settings,
+            sources::settings::set_source_curation_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -37,6 +37,36 @@ const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     "#,
+    r#"
+    -- La API key nunca vive acá (Mandato de Configurabilidad Soberana) —
+    -- se guarda por separado en el keychain del SO, indexada por este `id`.
+    CREATE TABLE ai_providers (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('gemini', 'openai_compatible')),
+        label TEXT NOT NULL,
+        model TEXT NOT NULL,
+        base_url TEXT,
+        active INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    "#,
+    r#"
+    -- Una fila por fuente de búsqueda (archive.org built-in + cada indexer
+    -- BYO), no por resultado — así la curación (IA u otro filtro) se
+    -- configura igual sin importar el origen. `id` es 'archive_org' para la
+    -- fuente built-in o el `indexers.id` de una fuente BYO (sin FK real
+    -- porque 'archive_org' no tiene fila en `indexers`; el borrado en
+    -- cascada lo hace remove_indexer a mano). `mediatype_filter` hoy solo lo
+    -- usa archive_org (equivalente al parámetro `mediatype` de su API);
+    -- queda nullable para el resto porque no tiene sentido genérico todavía.
+    CREATE TABLE source_settings (
+        id TEXT PRIMARY KEY,
+        curation_enabled INTEGER NOT NULL DEFAULT 1,
+        mediatype_filter TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO source_settings (id, mediatype_filter) VALUES ('archive_org', 'movies');
+    "#,
 ];
 
 fn db_path(app: &AppHandle) -> Result<PathBuf> {
@@ -49,7 +79,9 @@ fn db_path(app: &AppHandle) -> Result<PathBuf> {
     Ok(dir.join("popcorn.sqlite3"))
 }
 
-fn migrate(conn: &Connection) -> Result<()> {
+/// pub(crate) para que otros módulos puedan levantar una conexión in-memory
+/// ya migrada en sus propios tests (ver `sources::settings::tests`).
+pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let current = usize::try_from(current).unwrap_or(0);
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(current) {
@@ -126,5 +158,48 @@ mod tests {
             .query_row("SELECT enabled FROM indexers WHERE id = '1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(enabled, 1, "enabled debe tener default 1");
+    }
+
+    #[test]
+    fn ai_providers_table_has_no_seed_rows_and_defaults_inactive() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ai_providers", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "sin proveedor por defecto — el usuario elige y configura el suyo");
+
+        conn.execute(
+            "INSERT INTO ai_providers (id, kind, label, model) \
+             VALUES ('1', 'gemini', 'Mi Gemini', 'gemini-2.5-flash')",
+            [],
+        )
+        .unwrap();
+        let active: i64 = conn
+            .query_row("SELECT active FROM ai_providers WHERE id = '1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(active, 0, "active debe tener default 0");
+    }
+
+    #[test]
+    fn source_settings_seeds_archive_org_row_with_movies_filter() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let (curation_enabled, mediatype_filter): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT curation_enabled, mediatype_filter FROM source_settings WHERE id = 'archive_org'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(curation_enabled, 1);
+        assert_eq!(mediatype_filter.as_deref(), Some("movies"));
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM source_settings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "archive_org es la única fuente built-in, el resto se crea al agregar un indexer BYO");
     }
 }

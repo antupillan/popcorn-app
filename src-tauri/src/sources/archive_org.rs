@@ -9,6 +9,10 @@ pub struct ArchiveOrgItem {
     pub title: String,
     pub year: Option<i64>,
     pub licenseurl: Option<String>,
+    /// No viene en la respuesta de advancedsearch.php — se deriva del
+    /// `identifier` después de deserializar (ver `search`).
+    #[serde(default)]
+    pub thumbnail_url: String,
 }
 
 #[derive(Deserialize)]
@@ -23,11 +27,25 @@ struct SearchResponseBody {
 
 /// Only fuentes P2P nativas para v1 — archive.org distribuye vía .torrent
 /// real (verificado contra la API en vivo), no scraping ni mirrors propios.
-pub async fn search(client: &reqwest::Client, query: &str) -> anyhow::Result<Vec<ArchiveOrgItem>> {
+///
+/// `mediatype_filter` (ej. "movies") restringe del lado del servidor de
+/// archive.org, que indexa de todo (libros, audio, software) además de
+/// video — sin esto, una búsqueda de película trae ruido no relacionado.
+/// Viene de `source_settings.mediatype_filter`, nunca hardcodeado acá; si
+/// es `None` no se aplica ningún filtro (fail-open, ver plan).
+pub async fn search(
+    client: &reqwest::Client,
+    query: &str,
+    mediatype_filter: Option<&str>,
+) -> anyhow::Result<Vec<ArchiveOrgItem>> {
+    let q = match mediatype_filter {
+        Some(mt) if !mt.is_empty() => format!("({query}) AND mediatype:({mt})"),
+        _ => query.to_string(),
+    };
     let resp: SearchResponse = client
         .get(SEARCH_URL)
         .query(&[
-            ("q", query),
+            ("q", q.as_str()),
             ("fl[]", "identifier"),
             ("fl[]", "title"),
             ("fl[]", "year"),
@@ -41,7 +59,11 @@ pub async fn search(client: &reqwest::Client, query: &str) -> anyhow::Result<Vec
         .json()
         .await
         .context("respuesta de archive.org con formato inesperado")?;
-    Ok(resp.response.docs)
+    let mut docs = resp.response.docs;
+    for item in &mut docs {
+        item.thumbnail_url = format!("https://archive.org/services/img/{}", item.identifier);
+    }
+    Ok(docs)
 }
 
 #[derive(Deserialize)]
