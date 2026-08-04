@@ -39,6 +39,18 @@ pub trait TorrentEngine: Send + Sync {
     /// Local HTTP URL the frontend `<video>` can point at with Range support.
     async fn stream_url(&self, id: &str, file_idx: usize) -> anyhow::Result<String>;
 
+    /// Whether `id` currently resolves in this engine session. Needed
+    /// because `EmbeddedRqbit` holds no session persistence — every process
+    /// restart loses its in-memory torrents while `media_items.engine_torrent_id`
+    /// in SQLite still points at the old (now dangling) id. Callers use this
+    /// to detect that and heal by re-adding from `media_items` (source of
+    /// truth) instead of surfacing a raw "torrent no encontrado" to the user.
+    /// Default impl reuses `stream_url`'s own existence check — cheap, no
+    /// extra state per engine implementation.
+    async fn exists(&self, id: &str) -> bool {
+        self.stream_url(id, 0).await.is_ok()
+    }
+
     /// Optional capability: register a direct HTTP source to serve reads
     /// from when pure P2P won't deliver bytes (e.g. archive.org items that
     /// rely on BEP19 webseeds, which librqbit doesn't implement — see

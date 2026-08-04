@@ -14,12 +14,10 @@ export function VideoPlayer({ item, onClose }: VideoPlayerProps) {
   useEffect(() => {
     setUrl(null);
     setError(null);
-    if (!item.engine_torrent_id) {
-      setError("Este ítem no tiene un torrent asociado en el motor.");
-      return;
-    }
+    // Vía media_items.id, no engine_torrent_id directo: el backend sana el
+    // torrent si la sesión del motor lo perdió al reiniciar la app (bug #26).
     api
-      .getStreamUrl(item.engine_torrent_id, 0)
+      .getStreamUrlForMediaItem(item.id, 0)
       .then(setUrl)
       .catch((e) => setError(String(e)));
   }, [item]);

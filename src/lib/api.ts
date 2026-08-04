@@ -18,6 +18,12 @@ export const api = {
   getStreamUrl: (id: string, fileIdx: number) =>
     invoke<string>("get_stream_url", { id, fileIdx }),
 
+  // Usa media_items (id de biblioteca, no engine_torrent_id) como fuente de
+  // verdad — sana el torrent si la sesión del motor lo perdió al reiniciar
+  // la app (bug #26, EmbeddedRqbit no persiste sesión entre reinicios).
+  getStreamUrlForMediaItem: (mediaId: string, fileIdx: number) =>
+    invoke<string>("get_stream_url_for_media_item", { mediaId, fileIdx }),
+
   searchArchiveOrg: (query: string) =>
     invoke<ArchiveOrgItem[]>("search_archive_org", { query }),
 
