@@ -77,12 +77,16 @@ async fn stream_handler(
     headers: HeaderMap,
 ) -> Response {
     let Some(handle) = state.session.get(TorrentIdOrHash::Id(torrent_id)) else {
+        eprintln!("[popcorn] stream_handler 404: torrent={torrent_id} no encontrado en la sesión");
         return (StatusCode::NOT_FOUND, "torrent not found").into_response();
     };
 
     let mut file_stream = match handle.stream(file_idx) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+        Err(e) => {
+            eprintln!("[popcorn] stream_handler 404: torrent={torrent_id} file={file_idx} error={e}");
+            return (StatusCode::NOT_FOUND, e.to_string()).into_response();
+        }
     };
 
     let total = file_stream.len();
@@ -94,10 +98,14 @@ async fn stream_handler(
     };
 
     if start >= total || end < start {
+        eprintln!(
+            "[popcorn] stream_handler 416: torrent={torrent_id} file={file_idx} range={start}-{end} total={total}"
+        );
         return (StatusCode::RANGE_NOT_SATISFIABLE, "invalid range").into_response();
     }
 
     if let Err(e) = file_stream.seek(std::io::SeekFrom::Start(start)).await {
+        eprintln!("[popcorn] stream_handler 500: torrent={torrent_id} file={file_idx} seek_error={e}");
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
 
@@ -131,9 +139,16 @@ async fn proxy_handler(
     headers: HeaderMap,
 ) -> Response {
     let Some(url) = state.http_fallback.lock().unwrap().get(&torrent_id).cloned() else {
+        eprintln!("[popcorn] proxy_handler 404: torrent={torrent_id} sin fallback HTTP registrado");
         return (StatusCode::NOT_FOUND, "no hay fallback HTTP registrado para este torrent")
             .into_response();
     };
+
+    let range_header = headers
+        .get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("(sin Range)")
+        .to_string();
 
     let mut req = state.http_client.get(&url);
     if let Some(range) = headers.get(axum::http::header::RANGE) {
@@ -142,10 +157,24 @@ async fn proxy_handler(
 
     let upstream = match req.send().await {
         Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+        Err(e) => {
+            eprintln!(
+                "[popcorn] proxy_handler 502: torrent={torrent_id} url={url} range={range_header} error={e}"
+            );
+            return (StatusCode::BAD_GATEWAY, e.to_string()).into_response();
+        }
     };
 
     let status = upstream.status();
+    // Loguear también los errores que el origen devuelve pero que igual se
+    // reenvían tal cual (rate-limit, timeout del lado de archive.org, etc.)
+    // — sin esto, un 200/206 corrupto o un 4xx/5xx del origen queda invisible
+    // del lado del servidor y solo se ve como fallo genérico en el <video>.
+    if status.is_client_error() || status.is_server_error() {
+        eprintln!(
+            "[popcorn] proxy_handler upstream error: torrent={torrent_id} url={url} range={range_header} status={status}"
+        );
+    }
     let mut response = Response::builder().status(status);
     for header in [
         axum::http::header::CONTENT_TYPE,

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { MediaItem } from "../types";
 
@@ -10,6 +10,7 @@ interface VideoPlayerProps {
 export function VideoPlayer({ item, onClose }: VideoPlayerProps) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     setUrl(null);
@@ -44,11 +45,27 @@ export function VideoPlayer({ item, onClose }: VideoPlayerProps) {
           )}
           {url && (
             <video
+              ref={videoRef}
               src={url}
               controls
               autoPlay
               className="h-full w-full"
-              onError={() => setError("El reproductor no pudo cargar el stream.")}
+              onError={() => {
+                const el = videoRef.current;
+                const mediaError = el?.error;
+                // El código/mensaje de MediaError es la señal real que falta
+                // hoy para diagnosticar el bug #18 (ver plan) — sin esto el
+                // navegador descarta el motivo real (red/decode/formato) y
+                // solo queda un fallo genérico, sin poder distinguir causa.
+                const detail = mediaError
+                  ? `code=${mediaError.code} message="${mediaError.message || "(el navegador no dio mensaje)"}"`
+                  : "sin MediaError disponible";
+                const position = el
+                  ? `${el.currentTime.toFixed(1)}s/${el.duration ? el.duration.toFixed(1) : "?"}s`
+                  : "posición desconocida";
+                console.error(`[popcorn] video playback error: ${detail} en ${position}`);
+                setError(`El reproductor no pudo cargar el stream (${detail}, en ${position}).`);
+              }}
             />
           )}
         </div>
