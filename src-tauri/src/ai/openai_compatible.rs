@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{extract_structured_query, AiProvider, StructuredQuery, PARSE_QUERY_SYSTEM_PROMPT};
+use super::{
+    build_curation_user_text, extract_index_list, extract_structured_query, AiProvider,
+    StructuredQuery, CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
+};
 
 /// Un solo adaptador para cualquier proveedor que hable el formato de
 /// Chat Completions de OpenAI — cubre OpenAI, DeepSeek, Mistral y Ollama
@@ -54,6 +57,20 @@ fn parse_response_body(body: &str) -> anyhow::Result<StructuredQuery> {
     extract_structured_query(&raw)
 }
 
+/// Igual que `parse_response_body` pero extrayendo una lista de índices en
+/// vez de un `StructuredQuery` — separado para poder probar el parseo del
+/// formato real de Chat Completions con una fixture, sin necesitar key.
+fn parse_curation_response_body(body: &str) -> anyhow::Result<Vec<usize>> {
+    let resp: ChatCompletionResponse = serde_json::from_str(body)?;
+    let raw = resp
+        .choices
+        .into_iter()
+        .next()
+        .map(|c| c.message.content)
+        .ok_or_else(|| anyhow::anyhow!("el proveedor no devolvió ningún choice"))?;
+    extract_index_list(&raw)
+}
+
 #[async_trait]
 impl AiProvider for OpenAiCompatibleProvider {
     fn name(&self) -> &'static str {
@@ -76,6 +93,29 @@ impl AiProvider for OpenAiCompatibleProvider {
         }
         let raw_body = req.send().await?.error_for_status()?.text().await?;
         parse_response_body(&raw_body)
+    }
+
+    async fn curate_results(
+        &self,
+        query: &StructuredQuery,
+        candidates: &[String],
+    ) -> anyhow::Result<Vec<usize>> {
+        let url = format!("{}/chat/completions", self.base_url);
+        let text = build_curation_user_text(query, candidates);
+        let body = json!({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": CURATE_RESULTS_SYSTEM_PROMPT},
+                {"role": "user", "content": text}
+            ],
+            "response_format": {"type": "json_object"}
+        });
+        let mut req = self.client.post(&url).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let raw_body = req.send().await?.error_for_status()?.text().await?;
+        parse_curation_response_body(&raw_body)
     }
 }
 
@@ -106,6 +146,27 @@ mod tests {
     fn errors_when_no_choices() {
         let body = r#"{"choices": []}"#;
         assert!(parse_response_body(body).is_err());
+    }
+
+    #[test]
+    fn parses_real_shaped_curation_response() {
+        let body = r#"{
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"indices\": [2, 0]}"
+                },
+                "finish_reason": "stop"
+            }]
+        }"#;
+        assert_eq!(parse_curation_response_body(body).unwrap(), vec![2, 0]);
+    }
+
+    #[test]
+    fn curation_errors_when_no_choices() {
+        let body = r#"{"choices": []}"#;
+        assert!(parse_curation_response_body(body).is_err());
     }
 
     #[test]

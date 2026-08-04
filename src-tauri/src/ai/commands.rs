@@ -1,3 +1,4 @@
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 use tauri::State;
 
@@ -128,12 +129,13 @@ pub(crate) fn build_provider(
     }
 }
 
-/// Interpreta una búsqueda en lenguaje natural con el proveedor de IA activo
-/// del usuario. Nunca sugiere sitios/indexers — ver PARSE_QUERY_SYSTEM_PROMPT,
-/// fijo por la app sin importar qué proveedor lo ejecute (Mandato 8).
-#[tauri::command]
-pub async fn parse_query(db: State<'_, Db>, text: String) -> Result<StructuredQuery, String> {
-    let (id, kind, model, base_url) = {
+/// Resuelve el proveedor de IA activo del usuario (config + key del
+/// keychain) y lo instancia. `Ok(None)` significa "no hay proveedor activo"
+/// — no es un error, lo usan llamadores fail-open como la curación de
+/// resultados (ver `curation::curate`); `parse_query` sí lo trata como error
+/// porque ahí la IA es el propósito del comando, no un enriquecimiento.
+pub(crate) fn try_build_active_provider(db: &Db) -> Result<Option<Box<dyn AiProvider>>, String> {
+    let row: Option<(String, String, String, Option<String>)> = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         conn.query_row(
             "SELECT id, kind, model, base_url FROM ai_providers WHERE active = 1",
@@ -147,10 +149,25 @@ pub async fn parse_query(db: State<'_, Db>, text: String) -> Result<StructuredQu
                 ))
             },
         )
-        .map_err(|_| "no hay ningún proveedor de IA activo — configurá uno en Ajustes".to_string())?
+        .optional()
+        .map_err(|e| e.to_string())?
+    };
+    let Some((id, kind, model, base_url)) = row else {
+        return Ok(None);
     };
     let api_key = keychain::get_api_key(&id).map_err(|e| e.to_string())?;
-    let provider = build_provider(&kind, model, base_url, api_key).map_err(|e| e.to_string())?;
+    build_provider(&kind, model, base_url, api_key)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// Interpreta una búsqueda en lenguaje natural con el proveedor de IA activo
+/// del usuario. Nunca sugiere sitios/indexers — ver PARSE_QUERY_SYSTEM_PROMPT,
+/// fijo por la app sin importar qué proveedor lo ejecute (Mandato 8).
+#[tauri::command]
+pub async fn parse_query(db: State<'_, Db>, text: String) -> Result<StructuredQuery, String> {
+    let provider = try_build_active_provider(&db)?
+        .ok_or_else(|| "no hay ningún proveedor de IA activo — configurá uno en Ajustes".to_string())?;
     provider
         .parse_query(&text)
         .await

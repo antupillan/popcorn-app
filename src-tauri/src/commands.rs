@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
+use crate::ai::{commands::try_build_active_provider, curation, StructuredQuery};
 use crate::db::Db;
 use crate::engine::{AddTorrentSource, TorrentEngine, TorrentInfo};
 use crate::sources::archive_org::{self, ArchiveOrgItem};
@@ -123,18 +124,41 @@ pub async fn search_archive_org(
     db: State<'_, Db>,
     query: String,
 ) -> Result<Vec<ArchiveOrgItem>, String> {
-    let mediatype_filter: Option<String> = {
+    let (mediatype_filter, curation_enabled): (Option<String>, bool) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT mediatype_filter FROM source_settings WHERE id = 'archive_org'",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?
+        let mediatype_filter: Option<String> = conn
+            .query_row(
+                "SELECT mediatype_filter FROM source_settings WHERE id = 'archive_org'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let curation_enabled: bool = conn
+            .query_row(
+                "SELECT curation_enabled FROM source_settings WHERE id = 'archive_org'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(|e| e.to_string())?
+            != 0;
+        (mediatype_filter, curation_enabled)
     };
-    archive_org::search(&http.0, &query, mediatype_filter.as_deref())
+    let items = archive_org::search(&http.0, &query, mediatype_filter.as_deref())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if !curation_enabled {
+        return Ok(items);
+    }
+    // Fail-open: sin proveedor de IA activo, la búsqueda sigue funcionando
+    // con el filtro barato de mediatype ya aplicado (ver plan, decisión
+    // "curación por proveedor de búsqueda").
+    match try_build_active_provider(&db)? {
+        Some(provider) => {
+            let sq = StructuredQuery { title: query, ..Default::default() };
+            Ok(curation::curate(provider.as_ref(), &sq, items, |i| i.title.as_str()).await)
+        }
+        None => Ok(items),
+    }
 }
 
 /// Descarga el .torrent público del ítem, lo entrega al TorrentEngine activo

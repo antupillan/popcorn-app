@@ -4,6 +4,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::ai::{commands::try_build_active_provider, curation, StructuredQuery};
 use crate::db::Db;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -140,9 +141,26 @@ pub async fn test_indexer(
         .map_err(|e| e.to_string())
 }
 
+/// Lee `source_settings.curation_enabled` para una fuente puntual (acá
+/// siempre un `indexers.id`) — curación es config por fuente, no global, así
+/// que se consulta por cada indexer en vez de una sola vez para todos.
+fn curation_enabled_for(db: &Db, source_id: &str) -> Result<bool, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let enabled: i64 = conn
+        .query_row(
+            "SELECT curation_enabled FROM source_settings WHERE id = ?1",
+            [source_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(enabled != 0)
+}
+
 /// Despacha la query contra todos los indexers habilitados del usuario y
 /// fusiona resultados. Un indexer que falla no tira abajo a los demás —
-/// se omite y sigue con el resto.
+/// se omite y sigue con el resto. Curación por IA (si el indexer la tiene
+/// activada y hay un proveedor activo — fail-open si no) se aplica por
+/// indexer antes de fusionar, no sobre el resultado ya mezclado.
 #[tauri::command]
 pub async fn search_indexers(
     http: State<'_, crate::commands::HttpClient>,
@@ -165,10 +183,20 @@ pub async fn search_indexers(
         rows
     };
 
+    let provider = try_build_active_provider(&db)?;
+    let sq = StructuredQuery { title: query.clone(), ..Default::default() };
+
     let mut all = Vec::new();
     for indexer in &enabled {
         match search_one(&http.0, indexer, &query).await {
-            Ok(mut results) => all.append(&mut results),
+            Ok(mut results) => {
+                if let Some(provider) = &provider {
+                    if curation_enabled_for(&db, &indexer.id)? {
+                        results = curation::curate(provider.as_ref(), &sq, results, |r| r.title.as_str()).await;
+                    }
+                }
+                all.append(&mut results);
+            }
             Err(e) => eprintln!("[popcorn] indexer '{}' falló: {e}", indexer.name),
         }
     }

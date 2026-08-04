@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{extract_structured_query, AiProvider, StructuredQuery, PARSE_QUERY_SYSTEM_PROMPT};
+use super::{
+    build_curation_user_text, extract_index_list, extract_structured_query, AiProvider,
+    StructuredQuery, CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
+};
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -53,6 +56,21 @@ fn parse_response_body(body: &str) -> anyhow::Result<StructuredQuery> {
     extract_structured_query(&raw)
 }
 
+/// Igual que `parse_response_body` pero extrayendo una lista de índices en
+/// vez de un `StructuredQuery` — separado para poder probar el parseo del
+/// formato real de Gemini con una fixture, sin necesitar una API key.
+fn parse_curation_response_body(body: &str) -> anyhow::Result<Vec<usize>> {
+    let resp: GenerateContentResponse = serde_json::from_str(body)?;
+    let raw = resp
+        .candidates
+        .into_iter()
+        .next()
+        .and_then(|c| c.content.parts.into_iter().next())
+        .map(|p| p.text)
+        .ok_or_else(|| anyhow::anyhow!("Gemini no devolvió contenido en la respuesta"))?;
+    extract_index_list(&raw)
+}
+
 #[async_trait]
 impl AiProvider for GeminiProvider {
     fn name(&self) -> &'static str {
@@ -77,6 +95,31 @@ impl AiProvider for GeminiProvider {
             .text()
             .await?;
         parse_response_body(&raw_body)
+    }
+
+    async fn curate_results(
+        &self,
+        query: &StructuredQuery,
+        candidates: &[String],
+    ) -> anyhow::Result<Vec<usize>> {
+        let url = format!("{API_BASE}/models/{}:generateContent", self.model);
+        let text = build_curation_user_text(query, candidates);
+        let body = json!({
+            "contents": [{"parts": [{"text": text}]}],
+            "systemInstruction": {"parts": [{"text": CURATE_RESULTS_SYSTEM_PROMPT}]},
+            "generationConfig": {"responseMimeType": "application/json"}
+        });
+        let raw_body = self
+            .client
+            .post(&url)
+            .header("x-goog-api-key", &self.api_key)
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        parse_curation_response_body(&raw_body)
     }
 }
 
@@ -105,6 +148,26 @@ mod tests {
     fn errors_when_no_candidates() {
         let body = r#"{"candidates": []}"#;
         assert!(parse_response_body(body).is_err());
+    }
+
+    #[test]
+    fn parses_real_shaped_curation_response() {
+        let body = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "{\"indices\": [2, 0]}"}],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }]
+        }"#;
+        assert_eq!(parse_curation_response_body(body).unwrap(), vec![2, 0]);
+    }
+
+    #[test]
+    fn curation_errors_when_no_candidates() {
+        let body = r#"{"candidates": []}"#;
+        assert!(parse_curation_response_body(body).is_err());
     }
 
     #[tokio::test]
