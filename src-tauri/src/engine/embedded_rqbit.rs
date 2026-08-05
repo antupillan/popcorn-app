@@ -195,6 +195,106 @@ mod e2e {
         assert_eq!(body.len(), 1024, "el cuerpo debe traer exactamente los 1024 bytes pedidos");
     }
 
+    /// Reproducción de bug #18 (plan: "reproducción falla ~75% del video").
+    /// Un `<video>` real no pide el archivo entero de una vez — bufferiza en
+    /// requests `Range` sucesivos a medida que avanza. Este test imita
+    /// exactamente ese patrón contra el mismo ítem real de archive.org que ya
+    /// usa `add_real_archive_org_torrent_and_stream_it`, recorriendo el
+    /// archivo completo en chunks para ver si algún request falla — en
+    /// particular alrededor del 75%, el punto reportado. Si el proxy/origen
+    /// nunca falla, la causa no está en este tramo del backend (apunta a
+    /// comportamiento de seek del lado del reproductor WebKitGTK, no
+    /// reproducible desde acá — ver plan).
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "red real, no apto para CI por defecto; correr manualmente para diagnosticar bug #18"]
+    async fn streams_full_file_in_sequential_ranges_like_a_real_player() {
+        let tmp = tempdir();
+        let engine = EmbeddedRqbit::new(tmp.clone()).await.expect("crear sesión");
+
+        let http = reqwest::Client::new();
+        let torrent_bytes = archive_org::fetch_torrent_bytes(&http, "turner_video_444")
+            .await
+            .expect("descargar .torrent de archive.org");
+        let info = TorrentEngine::add(&engine, AddTorrentSource::TorrentBytes(torrent_bytes))
+            .await
+            .expect("agregar torrent al motor");
+
+        let fallback_url = archive_org::primary_video_file(&http, "turner_video_444")
+            .await
+            .expect("resolver archivo reproducible en metadata de archive.org");
+        TorrentEngine::register_http_fallback(&engine, &info.id, fallback_url)
+            .await
+            .expect("registrar fallback");
+
+        let url = TorrentEngine::stream_url(&engine, &info.id, 0)
+            .await
+            .expect("stream_url");
+
+        let head = http.get(&url).send().await.expect("request inicial sin range");
+        assert_eq!(head.status(), 200, "request inicial sin Range debe ser 200");
+        let total: u64 = head
+            .headers()
+            .get("content-length")
+            .expect("respuesta sin content-length")
+            .to_str()
+            .unwrap()
+            .parse()
+            .expect("content-length no numérico");
+        println!("[e2e][bug18] tamaño total del archivo: {total} bytes");
+
+        const CHUNK: u64 = 4 * 1024 * 1024; // 4MB, similar al tamaño de buffer real de un <video>
+        let mut pos: u64 = 0;
+        let mut chunk_n = 0;
+        while pos < total {
+            let end = (pos + CHUNK - 1).min(total - 1);
+            let pct = (pos as f64 / total as f64) * 100.0;
+            let start_t = std::time::Instant::now();
+            let resp = http
+                .get(&url)
+                .header("Range", format!("bytes={pos}-{end}"))
+                .send()
+                .await;
+            let elapsed = start_t.elapsed();
+
+            match resp {
+                Ok(r) if r.status() == 206 => {
+                    let expected_len = end - pos + 1;
+                    match r.bytes().await {
+                        Ok(body) if body.len() as u64 == expected_len => {
+                            println!(
+                                "[e2e][bug18] chunk {chunk_n} ok: {pct:.1}% bytes={pos}-{end} elapsed={elapsed:?}"
+                            );
+                        }
+                        Ok(body) => panic!(
+                            "chunk {chunk_n} en {pct:.1}% ({pos}-{end}): body incompleto, \
+                             esperaba {expected_len} bytes, llegaron {}",
+                            body.len()
+                        ),
+                        Err(e) => panic!(
+                            "chunk {chunk_n} en {pct:.1}% ({pos}-{end}): error leyendo el body: {e}"
+                        ),
+                    }
+                }
+                Ok(r) => panic!(
+                    "chunk {chunk_n} en {pct:.1}% ({pos}-{end}): status inesperado {} (esperaba 206), \
+                     headers={:?}",
+                    r.status(),
+                    r.headers()
+                ),
+                Err(e) => panic!(
+                    "chunk {chunk_n} en {pct:.1}% ({pos}-{end}): request falló: {e} \
+                     (is_timeout={} is_connect={})",
+                    e.is_timeout(),
+                    e.is_connect()
+                ),
+            }
+
+            pos = end + 1;
+            chunk_n += 1;
+        }
+        println!("[e2e][bug18] archivo completo recorrido sin fallos: {chunk_n} chunks, {total} bytes");
+    }
+
     /// Diagnóstico de control: ¿es P2P en general lo que no conecta, o es
     /// específico de archive.org (que depende de webseeds BEP19, no
     /// soportados por librqbit — ver .torrent url-list de turner_video_444)?

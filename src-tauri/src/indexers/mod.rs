@@ -211,9 +211,7 @@ async fn search_one(
     let url = indexer
         .search_url_template
         .replace("{query}", &urlencoding::encode(query));
-    let body = client
-        .get(&url)
-        .send()
+    let body = crate::http_retry::send_with_retry(|| client.get(&url))
         .await
         .with_context(|| format!("no se pudo contactar {url}"))?
         .text()

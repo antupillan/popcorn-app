@@ -42,9 +42,8 @@ pub async fn search(
         Some(mt) if !mt.is_empty() => format!("({query}) AND mediatype:({mt})"),
         _ => query.to_string(),
     };
-    let resp: SearchResponse = client
-        .get(SEARCH_URL)
-        .query(&[
+    let resp: SearchResponse = crate::http_retry::send_with_retry(|| {
+        client.get(SEARCH_URL).query(&[
             ("q", q.as_str()),
             ("fl[]", "identifier"),
             ("fl[]", "title"),
@@ -53,12 +52,12 @@ pub async fn search(
             ("rows", "50"),
             ("output", "json"),
         ])
-        .send()
-        .await
-        .context("no se pudo contactar archive.org")?
-        .json()
-        .await
-        .context("respuesta de archive.org con formato inesperado")?;
+    })
+    .await
+    .context("no se pudo contactar archive.org")?
+    .json()
+    .await
+    .context("respuesta de archive.org con formato inesperado")?;
     let mut docs = resp.response.docs;
     for item in &mut docs {
         item.thumbnail_url = format!("https://archive.org/services/img/{}", item.identifier);
@@ -90,9 +89,7 @@ pub async fn primary_video_file(
     identifier: &str,
 ) -> anyhow::Result<String> {
     let url = format!("https://archive.org/metadata/{identifier}");
-    let meta: MetadataResponse = client
-        .get(&url)
-        .send()
+    let meta: MetadataResponse = crate::http_retry::send_with_retry(|| client.get(&url))
         .await
         .with_context(|| format!("no se pudo consultar {url}"))?
         .json()
@@ -123,9 +120,7 @@ pub async fn fetch_torrent_bytes(
     identifier: &str,
 ) -> anyhow::Result<Vec<u8>> {
     let url = format!("https://archive.org/download/{identifier}/{identifier}_archive.torrent");
-    let resp = client
-        .get(&url)
-        .send()
+    let resp = crate::http_retry::send_with_retry(|| client.get(&url))
         .await
         .with_context(|| format!("no se pudo descargar {url}"))?
         .error_for_status()

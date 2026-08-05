@@ -150,12 +150,23 @@ async fn proxy_handler(
         .unwrap_or("(sin Range)")
         .to_string();
 
-    let mut req = state.http_client.get(&url);
-    if let Some(range) = headers.get(axum::http::header::RANGE) {
-        req = req.header(axum::http::header::RANGE, range.clone());
-    }
+    // Reintento con backoff ante 5xx/error de conexión — evidencia real
+    // (bug #18, ver plan): el datanode de archive.org devuelve 500
+    // intermitente en ~50% de los requests, sin relación con el rango
+    // pedido (confirmado repitiendo el mismo Range exacto: 206/500/206/500
+    // en la misma corrida). No es un bug de este proxy ni del parseo de
+    // Range — es inestabilidad transitoria del origen; ver `http_retry`
+    // (aplicado también al resto de llamadas HTTP salientes de la app).
+    let upstream = crate::http_retry::send_with_retry(|| {
+        let mut req = state.http_client.get(&url);
+        if let Some(range) = headers.get(axum::http::header::RANGE) {
+            req = req.header(axum::http::header::RANGE, range.clone());
+        }
+        req
+    })
+    .await;
 
-    let upstream = match req.send().await {
+    let upstream = match upstream {
         Ok(r) => r,
         Err(e) => {
             eprintln!(
@@ -167,9 +178,9 @@ async fn proxy_handler(
 
     let status = upstream.status();
     // Loguear también los errores que el origen devuelve pero que igual se
-    // reenvían tal cual (rate-limit, timeout del lado de archive.org, etc.)
-    // — sin esto, un 200/206 corrupto o un 4xx/5xx del origen queda invisible
-    // del lado del servidor y solo se ve como fallo genérico en el <video>.
+    // reenvían tal cual (4xx no reintentable, o 5xx que persistió tras
+    // agotar los reintentos) — sin esto quedan invisibles del lado del
+    // servidor y solo se ven como fallo genérico en el <video>.
     if status.is_client_error() || status.is_server_error() {
         eprintln!(
             "[popcorn] proxy_handler upstream error: torrent={torrent_id} url={url} range={range_header} status={status}"

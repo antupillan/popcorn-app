@@ -2,6 +2,7 @@ mod ai;
 mod commands;
 mod db;
 mod engine;
+mod http_retry;
 mod indexers;
 mod sources;
 

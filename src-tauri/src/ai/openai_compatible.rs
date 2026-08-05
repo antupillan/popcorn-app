@@ -87,11 +87,17 @@ impl AiProvider for OpenAiCompatibleProvider {
             ],
             "response_format": {"type": "json_object"}
         });
-        let mut req = self.client.post(&url).json(&body);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
-        let raw_body = req.send().await?.error_for_status()?.text().await?;
+        let raw_body = crate::http_retry::send_with_retry(|| {
+            let mut req = self.client.post(&url).json(&body);
+            if let Some(key) = &self.api_key {
+                req = req.bearer_auth(key);
+            }
+            req
+        })
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
         parse_response_body(&raw_body)
     }
 
@@ -110,11 +116,17 @@ impl AiProvider for OpenAiCompatibleProvider {
             ],
             "response_format": {"type": "json_object"}
         });
-        let mut req = self.client.post(&url).json(&body);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
-        let raw_body = req.send().await?.error_for_status()?.text().await?;
+        let raw_body = crate::http_retry::send_with_retry(|| {
+            let mut req = self.client.post(&url).json(&body);
+            if let Some(key) = &self.api_key {
+                req = req.bearer_auth(key);
+            }
+            req
+        })
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
         parse_curation_response_body(&raw_body)
     }
 }

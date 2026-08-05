@@ -84,16 +84,16 @@ impl AiProvider for GeminiProvider {
             "systemInstruction": {"parts": [{"text": PARSE_QUERY_SYSTEM_PROMPT}]},
             "generationConfig": {"responseMimeType": "application/json"}
         });
-        let raw_body = self
-            .client
-            .post(&url)
-            .header("x-goog-api-key", &self.api_key)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
+        let raw_body = crate::http_retry::send_with_retry(|| {
+            self.client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .json(&body)
+        })
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
         parse_response_body(&raw_body)
     }
 
@@ -109,16 +109,16 @@ impl AiProvider for GeminiProvider {
             "systemInstruction": {"parts": [{"text": CURATE_RESULTS_SYSTEM_PROMPT}]},
             "generationConfig": {"responseMimeType": "application/json"}
         });
-        let raw_body = self
-            .client
-            .post(&url)
-            .header("x-goog-api-key", &self.api_key)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
+        let raw_body = crate::http_retry::send_with_retry(|| {
+            self.client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .json(&body)
+        })
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
         parse_curation_response_body(&raw_body)
     }
 }
