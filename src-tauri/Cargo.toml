@@ -37,4 +37,9 @@ anyhow = "1"
 # unstable `cfg_select!` macro and fails on rustc 1.91 (stable). Bump once
 # the toolchain here is upgraded past whatever release stabilizes it.
 rusqlite = { version = "=0.39.0", features = ["bundled"] }
+# Media playlists HLS (segmentos, no la lista de canales — esa se parsea a
+# mano en iptv/parse.rs igual que indexers/parse.rs). Pure-Rust, sin binario
+# nativo. Verificado en crates.io antes de fijar versión: activamente
+# mantenido (última publicación 2026-07-30), 1.4M+ descargas.
+m3u8-rs = "6.0.1"
 

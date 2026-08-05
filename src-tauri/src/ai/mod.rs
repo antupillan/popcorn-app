@@ -35,6 +35,21 @@ pub trait AiProvider: Send + Sync {
         query: &StructuredQuery,
         candidates: &[String],
     ) -> anyhow::Result<Vec<usize>>;
+    /// Igual forma que `curate_results` (índices base 0, orden de
+    /// relevancia) pero sin `query` que matchear — `hint` es el criterio en
+    /// texto libre que define quién manda: para la fuente semilla
+    /// `iptv_org_public` es la app la que lo fija ("radiodifusores públicos
+    /// oficiales"); para una fuente BYO que el usuario agregó él mismo, el
+    /// criterio es el que el usuario haya escrito (o ninguno). La app nunca
+    /// impone su propio juicio de legitimidad sobre una lista que el usuario
+    /// eligió agregar — mismo principio que `indexers` (cero filas semilla,
+    /// contenido BYO es responsabilidad de quien lo agrega). Ver
+    /// `CURATE_CHANNELS_SYSTEM_PROMPT`.
+    async fn curate_channels(
+        &self,
+        candidates: &[String],
+        hint: Option<&str>,
+    ) -> anyhow::Result<Vec<usize>>;
 }
 
 /// Prompt fijo por la app (no editable por el usuario ni por config) —
@@ -68,6 +83,43 @@ pub(crate) fn build_curation_user_text(query: &StructuredQuery, candidates: &[St
         .collect::<Vec<_>>()
         .join("\n");
     format!("Búsqueda: {}\n\nCandidatos:\n{list}", query.title)
+}
+
+/// Prompt fijo para curar canales IPTV (Mandato 8) — a diferencia de
+/// `CURATE_RESULTS_SYSTEM_PROMPT`, no hay búsqueda que matchear, hay un
+/// `hint` en texto libre que define el criterio: cuando lo da la app (fuente
+/// semilla `iptv_org_public`) es "verificar legitimidad como radiodifusor
+/// público"; cuando lo da el usuario (fuente BYO) es lo que el usuario haya
+/// escrito. El prompt en sí queda fijo — el criterio variable vive en el
+/// mensaje de usuario (`build_channel_curation_user_text`), igual que la
+/// búsqueda ya viaja en el mensaje de usuario para `curate_results`, nunca
+/// en el prompt de sistema. Mismo contrato `{"indices": [...]}` que
+/// `CURATE_RESULTS_SYSTEM_PROMPT` por la misma razón (modo JSON forzado de
+/// OpenAI exige objeto, no array).
+pub(crate) const CURATE_CHANNELS_SYSTEM_PROMPT: &str = "Sos un filtro de canales de TV para listas IPTV agregadas de internet, que mezclan canales legítimos con entradas rotas, duplicadas o de dudosa procedencia. \
+Se te da un criterio de curación y una lista numerada de nombres de canal (con su categoría entre paréntesis cuando está disponible). \
+Devolvé ÚNICAMENTE un objeto JSON con esta forma exacta, sin texto adicional: {\"indices\": [number, ...]}. \
+`indices` son los índices (enteros, base 0) de los canales que cumplen el criterio dado, ordenados del más al menos ajustado a ese criterio. \
+Si el criterio pide verificar legitimidad como radiodifusor público/oficial, juzgalo por el nombre y la categoría — excluí spam, placeholders, duplicados evidentes y canales comerciales/privados sin relación con radiodifusión pública. \
+Si no se da ningún criterio, aplicá ese mismo criterio de legitimidad por defecto. \
+No inventes índices que no estén en la lista de candidatos. Si ningún candidato cumple el criterio, devolvé {\"indices\": []}. \
+Nunca sugieras sitios, URLs, ni agregues texto, explicación o markdown fuera del objeto JSON.";
+
+/// Arma el texto de usuario para `curate_channels`: criterio (`hint`, si lo
+/// hay) + lista numerada de candidatos, mismo formato para cualquier
+/// proveedor. Sin `hint`, el prompt de sistema ya sabe aplicar el default
+/// de legitimidad — acá simplemente no se agrega la línea de criterio.
+pub(crate) fn build_channel_curation_user_text(candidates: &[String], hint: Option<&str>) -> String {
+    let list = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("{i}: {t}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    match hint {
+        Some(h) if !h.trim().is_empty() => format!("Criterio: {h}\n\nCandidatos:\n{list}"),
+        _ => format!("Candidatos:\n{list}"),
+    }
 }
 
 #[derive(Deserialize)]

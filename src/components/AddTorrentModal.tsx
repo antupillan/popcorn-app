@@ -134,11 +134,20 @@ function SearchTab({ onAdded, onClose }: TabProps) {
             key={item.identifier}
             className="flex items-center justify-between gap-2 rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800"
           >
-            <div className="min-w-0">
-              <p className="truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">
-                {item.title}
-              </p>
-              <p className="text-[10px] text-zinc-500">{item.year ?? "—"}</p>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <img
+                src={item.thumbnail_url}
+                alt=""
+                className="h-10 w-10 shrink-0 rounded-md object-cover"
+                loading="lazy"
+                onError={(e) => (e.currentTarget.style.visibility = "hidden")}
+              />
+              <div className="min-w-0">
+                <p className="truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">
+                  {item.title}
+                </p>
+                <p className="text-[10px] text-zinc-500">{item.year ?? "—"}</p>
+              </div>
             </div>
             <button
               onClick={() => add(item)}

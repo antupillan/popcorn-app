@@ -67,6 +67,73 @@ const MIGRATIONS: &[&str] = &[
     );
     INSERT INTO source_settings (id, mediatype_filter) VALUES ('archive_org', 'movies');
     "#,
+    r#"
+    -- Una sola fila semilla, mismo criterio que `archive_org` en
+    -- source_settings (no el de `indexers`, que va a cero filas porque
+    -- agrega contenido con copyright arbitrario): la categoría "Public" que
+    -- el propio proyecto iptv-org clasifica y mantiene activamente son
+    -- streams oficiales de radiodifusores públicos (RTVE, CCMA, Canal Sur,
+    -- etc.) que esos mismos canales transmiten abiertamente — no es una
+    -- certificación de licencia de redistribución (a diferencia de
+    -- archive.org), es una clasificación de género/propiedad, pero coincide
+    -- con "TV pública" tal como se pidió. Verificado en vivo antes de
+    -- sembrarlo: 39 canales reales, formato M3U válido. El resto de
+    -- iptv_sources es BYO igual que `indexers` — el usuario agrega sus
+    -- propias listas además de esta. `source_kind='file'` guarda los bytes
+    -- subidos en disco (app_data_dir/iptv/playlists/{id}.m3u), no acá;
+    -- `playlist_url` queda NULL en ese caso. Ningún canal individual se
+    -- persiste — `list_channels` refetchea/reparsea la lista en cada
+    -- llamada, igual que `search_indexers` con los indexers.
+    CREATE TABLE iptv_sources (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('url', 'file')),
+        playlist_url TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO iptv_sources (id, name, source_kind, playlist_url) VALUES (
+        'iptv_org_public',
+        'iptv-org: Canales públicos',
+        'url',
+        'https://iptv-org.github.io/iptv/categories/public.m3u'
+    );
+    INSERT INTO source_settings (id) VALUES ('iptv_org_public');
+    "#,
+    r#"
+    -- A diferencia de source_settings/resultados de búsqueda, esto sí
+    -- persiste: una grabación tiene que sobrevivir un reinicio de la app
+    -- para poder listarse después. `source_id` sin FK real (mismo
+    -- precedente que source_settings -> indexers) para que una grabación
+    -- de una fuente ya borrada siga listada. `file_name` es relativo a
+    -- app_data_dir/iptv/recordings/.
+    CREATE TABLE iptv_recordings (
+        id TEXT PRIMARY KEY,
+        source_id TEXT,
+        channel_name TEXT NOT NULL,
+        manifest_url TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('recording', 'stopped', 'error')),
+        error TEXT,
+        bytes_written INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL DEFAULT (datetime('now')),
+        stopped_at TEXT
+    );
+    "#,
+    r#"
+    -- `source_settings` ya está commiteada de una sesión anterior — no se
+    -- edita esa migración (log, no snapshot), se agrega la columna acá.
+    -- Criterio de curación en texto libre, por fuente. Nulo en BYO por
+    -- defecto (el usuario lo escribe si quiere, ver curate_channels): "el
+    -- usuario agregó la lista, la curación sigue sus propios parámetros, no
+    -- un juicio de legalidad de la app" (mismo principio que indexers: cero
+    -- filas semilla, el contenido BYO es responsabilidad de quien lo agrega).
+    -- Único caso con valor precargado: la fuente semilla iptv_org_public,
+    -- donde sí es la app la que vouches por el criterio ("radiodifusores
+    -- públicos oficiales"), no el usuario.
+    ALTER TABLE source_settings ADD COLUMN curation_hint TEXT;
+    UPDATE source_settings SET curation_hint = 'radiodifusores públicos oficiales' WHERE id = 'iptv_org_public';
+    "#,
 ];
 
 fn db_path(app: &AppHandle) -> Result<PathBuf> {
@@ -200,6 +267,108 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM source_settings", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 1, "archive_org es la única fuente built-in, el resto se crea al agregar un indexer BYO");
+        assert_eq!(count, 2, "archive_org + iptv_org_public son las dos fuentes built-in; el resto se crea al agregar una fuente BYO");
+    }
+
+    #[test]
+    fn curation_hint_defaults_null_except_for_iptv_org_public_seed() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let archive_org_hint: Option<String> = conn
+            .query_row(
+                "SELECT curation_hint FROM source_settings WHERE id = 'archive_org'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(archive_org_hint, None, "archive_org no tiene hint propio — su curación es la de CURATE_RESULTS_SYSTEM_PROMPT, no la de canales");
+
+        let iptv_public_hint: Option<String> = conn
+            .query_row(
+                "SELECT curation_hint FROM source_settings WHERE id = 'iptv_org_public'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            iptv_public_hint.as_deref(),
+            Some("radiodifusores públicos oficiales"),
+            "única fuente donde la app fija el criterio, no el usuario"
+        );
+    }
+
+    #[test]
+    fn iptv_sources_seeds_exactly_the_iptv_org_public_row() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM iptv_sources", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "una sola fila semilla (iptv_org_public) — el resto es BYO, igual que indexers");
+
+        let (source_kind, playlist_url, enabled): (String, Option<String>, i64) = conn
+            .query_row(
+                "SELECT source_kind, playlist_url, enabled FROM iptv_sources WHERE id = 'iptv_org_public'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(source_kind, "url");
+        assert_eq!(playlist_url.as_deref(), Some("https://iptv-org.github.io/iptv/categories/public.m3u"));
+        assert_eq!(enabled, 1);
+
+        // Debe haber registrado su fila espejo en source_settings, mismo
+        // contrato de doble-insert que add_indexer.
+        let curation_enabled: i64 = conn
+            .query_row(
+                "SELECT curation_enabled FROM source_settings WHERE id = 'iptv_org_public'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(curation_enabled, 1, "default de source_settings, sin override especial para esta fuente");
+    }
+
+    #[test]
+    fn iptv_sources_rejects_unknown_source_kind() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let result = conn.execute(
+            "INSERT INTO iptv_sources (id, name, source_kind) VALUES ('x', 'Test', 'ftp')",
+            [],
+        );
+        assert!(result.is_err(), "el CHECK debe rechazar un source_kind fuera de ('url','file')");
+    }
+
+    #[test]
+    fn iptv_recordings_table_has_no_seed_rows_and_enforces_status_check() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM iptv_recordings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "las grabaciones las crea el usuario, no vienen precargadas");
+
+        conn.execute(
+            "INSERT INTO iptv_recordings (id, channel_name, manifest_url, file_name, status) \
+             VALUES ('r1', 'Canal Test', 'https://example.org/live.m3u8', 'r1.ts', 'recording')",
+            [],
+        )
+        .unwrap();
+        let bytes_written: i64 = conn
+            .query_row("SELECT bytes_written FROM iptv_recordings WHERE id = 'r1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bytes_written, 0, "bytes_written debe tener default 0");
+
+        let bad_status = conn.execute(
+            "INSERT INTO iptv_recordings (id, channel_name, manifest_url, file_name, status) \
+             VALUES ('r2', 'Canal Test', 'https://example.org/live.m3u8', 'r2.ts', 'paused')",
+            [],
+        );
+        assert!(bad_status.is_err(), "el CHECK debe rechazar un status fuera de ('recording','stopped','error')");
     }
 }

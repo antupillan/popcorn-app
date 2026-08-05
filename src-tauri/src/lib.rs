@@ -4,6 +4,7 @@ mod db;
 mod engine;
 mod http_retry;
 mod indexers;
+mod iptv;
 mod sources;
 
 use std::sync::{Arc, Mutex};
@@ -19,7 +20,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let conn = db::open(app.handle())?;
+            // RecorderState arranca vacío en cada proceso nuevo — cualquier
+            // fila 'recording' de una corrida anterior quedó huérfana.
+            iptv::recorder::reconcile_interrupted_recordings(&conn)?;
             app.manage(db::Db(Mutex::new(conn)));
+            app.manage(iptv::recorder::RecorderState::default());
 
             let downloads_dir = app.path().app_data_dir()?.join("downloads");
             std::fs::create_dir_all(&downloads_dir)?;
@@ -53,6 +58,16 @@ pub fn run() {
             ai::commands::parse_query,
             sources::settings::list_source_settings,
             sources::settings::set_source_curation_enabled,
+            iptv::list_iptv_sources,
+            iptv::add_iptv_source_url,
+            iptv::add_iptv_source_file,
+            iptv::remove_iptv_source,
+            iptv::toggle_iptv_source,
+            iptv::list_channels,
+            iptv::validate_channel_manifest,
+            iptv::recorder::start_recording,
+            iptv::recorder::stop_recording,
+            iptv::recorder::list_recordings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

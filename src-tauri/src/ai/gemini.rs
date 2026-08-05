@@ -3,8 +3,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    build_curation_user_text, extract_index_list, extract_structured_query, AiProvider,
-    StructuredQuery, CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
+    build_channel_curation_user_text, build_curation_user_text, extract_index_list,
+    extract_structured_query, AiProvider, StructuredQuery, CURATE_CHANNELS_SYSTEM_PROMPT,
+    CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
 };
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
@@ -107,6 +108,31 @@ impl AiProvider for GeminiProvider {
         let body = json!({
             "contents": [{"parts": [{"text": text}]}],
             "systemInstruction": {"parts": [{"text": CURATE_RESULTS_SYSTEM_PROMPT}]},
+            "generationConfig": {"responseMimeType": "application/json"}
+        });
+        let raw_body = crate::http_retry::send_with_retry(|| {
+            self.client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .json(&body)
+        })
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+        parse_curation_response_body(&raw_body)
+    }
+
+    async fn curate_channels(
+        &self,
+        candidates: &[String],
+        hint: Option<&str>,
+    ) -> anyhow::Result<Vec<usize>> {
+        let url = format!("{API_BASE}/models/{}:generateContent", self.model);
+        let text = build_channel_curation_user_text(candidates, hint);
+        let body = json!({
+            "contents": [{"parts": [{"text": text}]}],
+            "systemInstruction": {"parts": [{"text": CURATE_CHANNELS_SYSTEM_PROMPT}]},
             "generationConfig": {"responseMimeType": "application/json"}
         });
         let raw_body = crate::http_retry::send_with_retry(|| {

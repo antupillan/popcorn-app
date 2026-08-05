@@ -19,6 +19,7 @@ export interface ArchiveOrgItem {
   title: string;
   year: number | null;
   licenseurl: string | null;
+  thumbnail_url: string;
 }
 
 export interface MediaItem {
@@ -31,4 +32,34 @@ export interface MediaItem {
   engine_torrent_id: string | null;
   is_private: boolean;
   added_at: string;
+}
+
+export interface IptvSource {
+  id: string;
+  name: string;
+  source_kind: "url" | "file";
+  playlist_url: string | null;
+  enabled: boolean;
+}
+
+export interface Channel {
+  name: string;
+  url: string;
+  group: string | null;
+  logo_url: string | null;
+  tvg_id: string | null;
+  source_id: string;
+}
+
+export interface RecordingInfo {
+  id: string;
+  source_id: string | null;
+  channel_name: string;
+  manifest_url: string;
+  file_name: string;
+  status: "recording" | "stopped" | "error";
+  error: string | null;
+  bytes_written: number;
+  started_at: string;
+  stopped_at: string | null;
 }

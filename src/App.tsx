@@ -7,8 +7,11 @@ import { TorrentList } from "./components/TorrentList";
 import { MediaLibrary } from "./components/MediaLibrary";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { FirstRunScreen } from "./components/FirstRunScreen";
+import { IptvView } from "./components/IptvView";
 import { api } from "./lib/api";
 import type { MediaItem, TorrentInfo } from "./types";
+
+type Playing = { kind: "media"; item: MediaItem } | { kind: "channel"; title: string; url: string };
 
 const FIRST_RUN_KEY = "popcorn.acceptedFirstRun";
 const THEME_KEY = "popcorn.theme";
@@ -36,7 +39,7 @@ function App() {
   const [isDark, setIsDark] = useState(() => localStorage.getItem(THEME_KEY) !== "light");
   const [view, setView] = useState<View>("library");
   const [modalOpen, setModalOpen] = useState(false);
-  const [playing, setPlaying] = useState<MediaItem | null>(null);
+  const [playing, setPlaying] = useState<Playing | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
@@ -88,10 +91,13 @@ function App() {
 
         <main className="flex-1 overflow-y-auto">
           {view === "library" && (
-            <MediaLibrary items={mediaItems} onPlay={setPlaying} />
+            <MediaLibrary items={mediaItems} onPlay={(item) => setPlaying({ kind: "media", item })} />
           )}
           {view === "torrents" && (
             <TorrentList torrents={torrents} onChanged={refreshTorrents} />
+          )}
+          {view === "channels" && (
+            <IptvView onPlayChannel={(channel) => setPlaying({ kind: "channel", ...channel })} />
           )}
         </main>
       </div>
@@ -99,7 +105,12 @@ function App() {
       {modalOpen && (
         <AddTorrentModal onClose={() => setModalOpen(false)} onAdded={handleAdded} />
       )}
-      {playing && <VideoPlayer item={playing} onClose={() => setPlaying(null)} />}
+      {playing?.kind === "media" && (
+        <VideoPlayer kind="media" item={playing.item} onClose={() => setPlaying(null)} />
+      )}
+      {playing?.kind === "channel" && (
+        <VideoPlayer kind="channel" title={playing.title} url={playing.url} onClose={() => setPlaying(null)} />
+      )}
     </div>
   );
 }
