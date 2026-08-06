@@ -5,6 +5,8 @@ mod engine;
 mod http_retry;
 mod indexers;
 mod iptv;
+mod local_library;
+mod online_library;
 mod sources;
 
 use std::sync::{Arc, Mutex};
@@ -18,6 +20,7 @@ use engine::TorrentEngine;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let conn = db::open(app.handle())?;
             // RecorderState arranca vacío en cada proceso nuevo — cualquier
@@ -58,6 +61,12 @@ pub fn run() {
             ai::commands::parse_query,
             sources::settings::list_source_settings,
             sources::settings::set_source_curation_enabled,
+            online_library::browse_online_library,
+            online_library::add_online_item,
+            local_library::get_local_library_folder,
+            local_library::set_local_library_folder,
+            local_library::list_local_files,
+            local_library::get_local_stream_url,
             iptv::list_iptv_sources,
             iptv::add_iptv_source_url,
             iptv::add_iptv_source_file,

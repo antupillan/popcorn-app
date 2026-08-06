@@ -13,12 +13,13 @@ use librqbit::Session;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
-use super::embedded_rqbit::HttpFallbackMap;
+use super::embedded_rqbit::{HttpFallbackMap, LocalFileMap};
 
 #[derive(Clone)]
 struct AppState {
     session: Arc<Session>,
     http_fallback: HttpFallbackMap,
+    local_files: LocalFileMap,
     http_client: reqwest::Client,
 }
 
@@ -29,19 +30,25 @@ struct AppState {
 /// HTTP source when one was registered as a fallback (see
 /// TorrentEngine::register_http_fallback) — same Range semantics either way,
 /// so the frontend never needs to know which path served a given torrent.
-pub async fn spawn(session: Arc<Session>, http_fallback: HttpFallbackMap) -> anyhow::Result<u16> {
+pub async fn spawn(
+    session: Arc<Session>,
+    http_fallback: HttpFallbackMap,
+    local_files: LocalFileMap,
+) -> anyhow::Result<u16> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
 
     let state = AppState {
         session,
         http_fallback,
+        local_files,
         http_client: reqwest::Client::new(),
     };
 
     let app = Router::new()
         .route("/stream/{torrent_id}/{file_idx}", get(stream_handler))
         .route("/proxy/{torrent_id}", get(proxy_handler))
+        .route("/local/{token}", get(local_stream_handler))
         .with_state(state);
 
     tokio::spawn(async move {
@@ -71,6 +78,22 @@ fn parse_range(headers: &HeaderMap) -> Option<ByteRange> {
     Some(ByteRange { start, end })
 }
 
+/// Resuelve el rango efectivo a servir dado un `total` conocido — compartido
+/// entre `stream_handler` (torrents) y `local_stream_handler` (archivos
+/// locales), misma semántica de Range para ambos. `Err` ya trae la
+/// respuesta 416 lista para devolver tal cual.
+fn resolve_range(headers: &HeaderMap, total: u64) -> Result<(u64, u64, StatusCode), Response> {
+    let range = parse_range(headers);
+    let (start, end, status) = match range {
+        Some(r) => (r.start, r.end.unwrap_or(total.saturating_sub(1)), StatusCode::PARTIAL_CONTENT),
+        None => (0, total.saturating_sub(1), StatusCode::OK),
+    };
+    if start >= total || end < start {
+        return Err((StatusCode::RANGE_NOT_SATISFIABLE, "invalid range").into_response());
+    }
+    Ok((start, end, status))
+}
+
 async fn stream_handler(
     State(state): State<AppState>,
     Path((torrent_id, file_idx)): Path<(usize, usize)>,
@@ -90,19 +113,15 @@ async fn stream_handler(
     };
 
     let total = file_stream.len();
-    let range = parse_range(&headers);
-
-    let (start, end, status) = match range {
-        Some(r) => (r.start, r.end.unwrap_or(total.saturating_sub(1)), StatusCode::PARTIAL_CONTENT),
-        None => (0, total.saturating_sub(1), StatusCode::OK),
+    let (start, end, status) = match resolve_range(&headers, total) {
+        Ok(v) => v,
+        Err(resp) => {
+            eprintln!(
+                "[popcorn] stream_handler 416: torrent={torrent_id} file={file_idx} total={total}"
+            );
+            return resp;
+        }
     };
-
-    if start >= total || end < start {
-        eprintln!(
-            "[popcorn] stream_handler 416: torrent={torrent_id} file={file_idx} range={start}-{end} total={total}"
-        );
-        return (StatusCode::RANGE_NOT_SATISFIABLE, "invalid range").into_response();
-    }
 
     if let Err(e) = file_stream.seek(std::io::SeekFrom::Start(start)).await {
         eprintln!("[popcorn] stream_handler 500: torrent={torrent_id} file={file_idx} seek_error={e}");
@@ -199,6 +218,69 @@ async fn proxy_handler(
     }
 
     let body = Body::from_stream(upstream.bytes_stream());
+    response.body(body).unwrap().into_response()
+}
+
+/// Sirve un archivo de la biblioteca Local con soporte de Range, misma
+/// semántica que `stream_handler` pero leyendo de `tokio::fs::File` en vez
+/// de un handle de librqbit. `token` es opaco (ver `LocalFileMap`) — nunca
+/// se expone el path real en la URL que llega al frontend.
+async fn local_stream_handler(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(path) = state.local_files.lock().unwrap().get(&token).cloned() else {
+        eprintln!("[popcorn] local_stream_handler 404: token={token} sin archivo registrado");
+        return (StatusCode::NOT_FOUND, "archivo local no encontrado").into_response();
+    };
+
+    let mut file = match tokio::fs::File::open(&path).await {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[popcorn] local_stream_handler 500: path={} error={e}", path.display());
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+
+    let total = match file.metadata().await {
+        Ok(m) => m.len(),
+        Err(e) => {
+            eprintln!("[popcorn] local_stream_handler 500: path={} metadata_error={e}", path.display());
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+
+    let (start, end, status) = match resolve_range(&headers, total) {
+        Ok(v) => v,
+        Err(resp) => {
+            eprintln!("[popcorn] local_stream_handler 416: path={} total={total}", path.display());
+            return resp;
+        }
+    };
+
+    if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
+        eprintln!("[popcorn] local_stream_handler 500: path={} seek_error={e}", path.display());
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    let content_length = end - start + 1;
+    let limited = AsyncReadExt::take(file, content_length);
+    let body = Body::from_stream(ReaderStream::new(limited));
+
+    let mut response = Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+        .header(axum::http::header::ACCEPT_RANGES, "bytes")
+        .header(axum::http::header::CONTENT_LENGTH, content_length);
+
+    if status == StatusCode::PARTIAL_CONTENT {
+        response = response.header(
+            axum::http::header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{total}"),
+        );
+    }
+
     response.body(body).unwrap().into_response()
 }
 

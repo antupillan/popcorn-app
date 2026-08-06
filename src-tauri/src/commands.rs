@@ -7,6 +7,7 @@ use crate::ai::{commands::try_build_active_provider, curation, StructuredQuery};
 use crate::db::Db;
 use crate::engine::{AddTorrentSource, TorrentEngine, TorrentInfo};
 use crate::sources::archive_org::{self, ArchiveOrgItem};
+use crate::sources::public_domain_torrents;
 
 pub struct EngineState(pub Arc<dyn TorrentEngine>);
 pub struct HttpClient(pub reqwest::Client);
@@ -204,6 +205,19 @@ async fn heal_media_item(
                 .map_err(|e| e.to_string())?;
             info.id
         }
+        "public_domain_torrents" => {
+            // Sin fallback HTTP (a diferencia de archive_org): P2P puro,
+            // limitación conocida (ver plan) — `source_identifier` ya es la
+            // URL de descarga resuelta (ver `PublicDomainMovie::identifier`).
+            let bytes = public_domain_torrents::fetch_torrent_bytes(http, source_identifier)
+                .await
+                .map_err(|e| e.to_string())?;
+            let info = engine
+                .add(AddTorrentSource::TorrentBytes(bytes))
+                .await
+                .map_err(|e| e.to_string())?;
+            info.id
+        }
         other => {
             // "torrent_file": los bytes originales del .torrent no se guardan
             // en ningún lado (ni DB ni disco) — no hay de dónde re-agregarlo.
@@ -253,7 +267,7 @@ pub async fn search_archive_org(
             != 0;
         (mediatype_filter, curation_enabled)
     };
-    let items = archive_org::search(&http.0, &query, mediatype_filter.as_deref())
+    let items = archive_org::search(&http.0, &query, mediatype_filter.as_deref(), None)
         .await
         .map_err(|e| e.to_string())?;
     if !curation_enabled {
@@ -271,25 +285,29 @@ pub async fn search_archive_org(
     }
 }
 
-/// Descarga el .torrent público del ítem, lo entrega al TorrentEngine activo
-/// y registra el ítem en media_items (source_type = 'archive_org') para que
-/// quede en la biblioteca local — no solo en la lista de torrents del motor.
-#[tauri::command]
-pub async fn add_archive_org_item(
-    http: State<'_, HttpClient>,
-    engine: State<'_, EngineState>,
-    db: State<'_, Db>,
-    identifier: String,
-    title: String,
+/// Núcleo reusado por el comando `add_archive_org_item` y por
+/// `online_library::add_online_item` para ítems "archive_org"/
+/// "blender_foundation" (ambos son ítems de archive.org — Blender solo
+/// difiere en de qué catálogo salió la búsqueda, ver
+/// `sources::archive_org::blender_foundation_items` — y comparten
+/// `source_type = 'archive_org'`, sin fila propia en el CHECK de
+/// `media_items`). Descarga el .torrent público, lo entrega al TorrentEngine
+/// activo y registra el ítem en media_items para que quede en la biblioteca
+/// local, no solo en la lista de torrents del motor.
+pub(crate) async fn add_archive_org_item_core(
+    http: &reqwest::Client,
+    engine: &Arc<dyn TorrentEngine>,
+    db: &Db,
+    identifier: &str,
+    title: &str,
     year: Option<i64>,
     licenseurl: Option<String>,
 ) -> Result<TorrentInfo, String> {
-    let bytes = archive_org::fetch_torrent_bytes(&http.0, &identifier)
+    let bytes = archive_org::fetch_torrent_bytes(http, identifier)
         .await
         .map_err(|e| e.to_string())?;
 
     let info = engine
-        .0
         .add(AddTorrentSource::TorrentBytes(bytes))
         .await
         .map_err(|e| e.to_string())?;
@@ -298,9 +316,8 @@ pub async fn add_archive_org_item(
     // webseeds (BEP19) que librqbit no soporta (ver Tarea 9 de verificación
     // E2E). Si no se puede resolver un archivo reproducible, no es fatal —
     // el torrent sigue agregado y puede eventualmente completar por P2P.
-    if let Ok(url) = archive_org::primary_video_file(&http.0, &identifier).await {
+    if let Ok(url) = archive_org::primary_video_file(http, identifier).await {
         engine
-            .0
             .register_http_fallback(&info.id, url)
             .await
             .map_err(|e| e.to_string())?;
@@ -313,12 +330,25 @@ pub async fn add_archive_org_item(
             "INSERT INTO media_items \
              (id, source_type, source_identifier, title, year, license, engine_torrent_id) \
              VALUES (?1, 'archive_org', ?2, ?3, ?4, ?5, ?6)",
-            (&media_id, &identifier, &title, year, licenseurl, &info.id),
+            (&media_id, identifier, title, year, licenseurl, &info.id),
         )
         .map_err(|e| e.to_string())?;
     }
 
     Ok(info)
+}
+
+#[tauri::command]
+pub async fn add_archive_org_item(
+    http: State<'_, HttpClient>,
+    engine: State<'_, EngineState>,
+    db: State<'_, Db>,
+    identifier: String,
+    title: String,
+    year: Option<i64>,
+    licenseurl: Option<String>,
+) -> Result<TorrentInfo, String> {
+    add_archive_org_item_core(&http.0, &engine.0, &db, &identifier, &title, year, licenseurl).await
 }
 
 #[cfg(test)]

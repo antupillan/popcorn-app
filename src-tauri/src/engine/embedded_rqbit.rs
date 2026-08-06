@@ -9,6 +9,11 @@ use librqbit::{AddTorrent, Session, TorrentStatsState};
 use super::{AddTorrentSource, TorrentEngine, TorrentInfo};
 
 pub type HttpFallbackMap = Arc<Mutex<HashMap<String, String>>>;
+/// Token opaco -> path real en disco (biblioteca Local, ver
+/// `TorrentEngine::local_stream_url`). Mismo shape que `HttpFallbackMap`
+/// (mapa en memoria, sin persistencia) por la misma razón: nunca se expone
+/// el path crudo en la URL que llega al frontend.
+pub type LocalFileMap = Arc<Mutex<HashMap<String, std::path::PathBuf>>>;
 
 /// Default TorrentEngine: librqbit embedded directly as a Rust dependency,
 /// no sidecar process, no HTTP API of its own exposed. This is the engine
@@ -18,6 +23,7 @@ pub struct EmbeddedRqbit {
     session: Arc<Session>,
     stream_port: u16,
     http_fallback: HttpFallbackMap,
+    local_files: LocalFileMap,
 }
 
 impl EmbeddedRqbit {
@@ -26,13 +32,15 @@ impl EmbeddedRqbit {
             .await
             .context("no se pudo iniciar la sesión de librqbit")?;
         let http_fallback: HttpFallbackMap = Arc::new(Mutex::new(HashMap::new()));
-        let stream_port = super::stream_server::spawn(session.clone(), http_fallback.clone())
+        let local_files: LocalFileMap = Arc::new(Mutex::new(HashMap::new()));
+        let stream_port = super::stream_server::spawn(session.clone(), http_fallback.clone(), local_files.clone())
             .await
             .context("no se pudo levantar el servidor de streaming local")?;
         Ok(Self {
             session,
             stream_port,
             http_fallback,
+            local_files,
         })
     }
 }
@@ -104,6 +112,12 @@ impl TorrentEngine for EmbeddedRqbit {
             .unwrap()
             .insert(id.to_string(), url);
         Ok(())
+    }
+
+    async fn local_stream_url(&self, path: std::path::PathBuf) -> anyhow::Result<String> {
+        let token = uuid::Uuid::new_v4().to_string();
+        self.local_files.lock().unwrap().insert(token.clone(), path);
+        Ok(format!("http://127.0.0.1:{}/local/{token}", self.stream_port))
     }
 }
 

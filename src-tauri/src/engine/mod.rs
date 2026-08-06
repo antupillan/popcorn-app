@@ -61,4 +61,16 @@ pub trait TorrentEngine: Send + Sync {
     async fn register_http_fallback(&self, _id: &str, _url: String) -> anyhow::Result<()> {
         Ok(())
     }
+
+    /// Optional capability: sirve un archivo local (biblioteca Local, no un
+    /// torrent) vía el mismo servidor HTTP con soporte de Range que ya usa
+    /// `stream_url`/`register_http_fallback`, sin exponer el path crudo en
+    /// la URL devuelta. Error por defecto; solo `EmbeddedRqbit` lo
+    /// implementa hoy. Nota de arquitectura honesta (ver plan, no resuelta):
+    /// esto acopla la biblioteca Local a que el motor activo sea
+    /// `EmbeddedRqbit` — el día que exista `ExternalQbittorrent`/
+    /// `ExternalTransmission`, este método fallaría con ellos activos.
+    async fn local_stream_url(&self, _path: std::path::PathBuf) -> anyhow::Result<String> {
+        anyhow::bail!("el motor activo no soporta biblioteca local (requiere EmbeddedRqbit)")
+    }
 }
