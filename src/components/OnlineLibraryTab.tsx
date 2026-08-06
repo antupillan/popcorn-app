@@ -6,6 +6,8 @@ const KIND_LABEL: Record<OnlineItem["kind"], string> = {
   archive_org: "archive.org",
   public_domain_torrents: "Public Domain Torrents",
   blender_foundation: "Blender Foundation",
+  prelinger: "Prelinger Archives",
+  feature_films: "Cine clásico",
 };
 
 interface OnlineLibraryTabProps {

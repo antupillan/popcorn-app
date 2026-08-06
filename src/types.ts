@@ -35,7 +35,7 @@ export interface MediaItem {
 }
 
 export interface OnlineItem {
-  kind: "archive_org" | "public_domain_torrents" | "blender_foundation";
+  kind: "archive_org" | "public_domain_torrents" | "blender_foundation" | "prelinger" | "feature_films";
   identifier: string;
   title: string;
   year: number | null;
