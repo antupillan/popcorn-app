@@ -1,5 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ArchiveOrgItem, Channel, IptvSource, MediaItem, RecordingInfo, TorrentInfo } from "../types";
+import type {
+  ArchiveOrgItem,
+  Channel,
+  IptvSource,
+  LocalFile,
+  MediaItem,
+  OnlineItem,
+  RecordingInfo,
+  TorrentInfo,
+} from "../types";
 
 // Envoltorios finos y tipados sobre invoke() — un lugar único por comando,
 // para no repetir el nombre del comando ni el tipo de retorno en cada
@@ -66,4 +75,22 @@ export const api = {
   stopRecording: (id: string) => invoke<void>("stop_recording", { id }),
 
   listRecordings: () => invoke<RecordingInfo[]>("list_recordings"),
+
+  browseOnlineLibrary: () => invoke<OnlineItem[]>("browse_online_library"),
+
+  addOnlineItem: (
+    kind: string,
+    identifier: string,
+    title: string,
+    year: number | null,
+    license: string | null,
+  ) => invoke<TorrentInfo>("add_online_item", { kind, identifier, title, year, license }),
+
+  getLocalLibraryFolder: () => invoke<string | null>("get_local_library_folder"),
+
+  setLocalLibraryFolder: (folder: string) => invoke<void>("set_local_library_folder", { folder }),
+
+  listLocalFiles: () => invoke<LocalFile[]>("list_local_files"),
+
+  getLocalStreamUrl: (path: string) => invoke<string>("get_local_stream_url", { path }),
 };

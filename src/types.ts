@@ -24,7 +24,7 @@ export interface ArchiveOrgItem {
 
 export interface MediaItem {
   id: string;
-  source_type: "archive_org" | "magnet" | "torrent_file";
+  source_type: "archive_org" | "magnet" | "torrent_file" | "public_domain_torrents";
   source_identifier: string;
   title: string;
   year: number | null;
@@ -32,6 +32,20 @@ export interface MediaItem {
   engine_torrent_id: string | null;
   is_private: boolean;
   added_at: string;
+}
+
+export interface OnlineItem {
+  kind: "archive_org" | "public_domain_torrents" | "blender_foundation";
+  identifier: string;
+  title: string;
+  year: number | null;
+  license: string | null;
+  thumbnail_url: string | null;
+}
+
+export interface LocalFile {
+  path: string;
+  name: string;
 }
 
 export interface IptvSource {
