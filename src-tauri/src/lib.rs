@@ -62,6 +62,7 @@ pub fn run() {
             sources::settings::list_source_settings,
             sources::settings::set_source_curation_enabled,
             online_library::browse_online_library,
+            online_library::browse_public_domain_torrents,
             online_library::add_online_item,
             local_library::get_local_library_folder,
             local_library::set_local_library_folder,

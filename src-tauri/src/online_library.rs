@@ -67,31 +67,29 @@ fn archive_org_mediatype_filter(db: &Db) -> Result<Option<String>, String> {
     .map_err(|e| e.to_string())
 }
 
-/// Catálogo Online completo: archive.org (modo "browse sin búsqueda") y
-/// Public Domain Torrents en paralelo (`tokio::join!` — cada uno hace varios
-/// requests HTTP propios, no hay razón para serializarlos), Blender
-/// Foundation es síncrono y sin I/O. Curación por IA (`curate_by_hint`,
-/// fail-open) se aplica por fuente según su propio `curation_enabled`/
-/// `curation_hint`, nunca a Blender Foundation (allowlist ya vetted a mano,
-/// ver `source_settings`). Una fuente que falla se loguea y se saltea, no
-/// tira abajo a las demás (mismo criterio que `iptv::list_channels`).
-async fn browse_online_library_inner(
+/// Fuentes rápidas de Online: archive.org (modo "browse sin búsqueda") +
+/// Blender Foundation (síncrono, sin I/O) — separado de Public Domain
+/// Torrents (`browse_public_domain_torrents_inner` abajo) porque ese sitio
+/// de terceros es mucho más lento (~13s medido en vivo contra ~1.5s de
+/// archive.org, ver sección "investigar lentitud" del plan): un solo
+/// comando esperando a ambas fuentes frenaba toda la pestaña Online detrás
+/// de la más lenta. El frontend dispara los dos comandos en paralelo sin
+/// esperar uno al otro y renderiza cada grupo apenas responde. Curación por
+/// IA (`curate_by_hint`, fail-open) se aplica según `curation_enabled`/
+/// `curation_hint` propios de archive_org, nunca a Blender Foundation
+/// (allowlist ya vetted a mano, ver `source_settings`). archive.org
+/// fallando se loguea y se saltea, no tira abajo a Blender (mismo criterio
+/// que `iptv::list_channels`).
+async fn browse_online_library_fast_inner(
     http: &reqwest::Client,
     db: &Db,
 ) -> Result<Vec<OnlineItem>, String> {
     let mediatype_filter = archive_org_mediatype_filter(db)?;
     let (archive_org_enabled, archive_org_hint) = curation_settings_for(db, "archive_org")?;
-    let (pdt_enabled, pdt_hint) = curation_settings_for(db, "public_domain_torrents")?;
-
-    let (archive_org_result, pdt_result) = tokio::join!(
-        archive_org::browse_movies(http, mediatype_filter.as_deref()),
-        public_domain_torrents::browse(http),
-    );
-
     let provider = try_build_active_provider(db)?;
-    let mut all = Vec::new();
 
-    match archive_org_result {
+    let mut all = Vec::new();
+    match archive_org::browse_movies(http, mediatype_filter.as_deref()).await {
         Ok(items) => {
             let mut items: Vec<OnlineItem> = items
                 .into_iter()
@@ -113,25 +111,6 @@ async fn browse_online_library_inner(
         Err(e) => eprintln!("[popcorn] fuente Online 'archive_org' falló: {e}"),
     }
 
-    match pdt_result {
-        Ok(items) => {
-            let mut items: Vec<OnlineItem> = items.into_iter().map(online_item_from_pdt).collect();
-            if pdt_enabled {
-                if let Some(provider) = &provider {
-                    items = curation::curate_by_hint(
-                        provider.as_ref(),
-                        items,
-                        |i| i.title.as_str(),
-                        pdt_hint.as_deref(),
-                    )
-                    .await;
-                }
-            }
-            all.append(&mut items);
-        }
-        Err(e) => eprintln!("[popcorn] fuente Online 'public_domain_torrents' falló: {e}"),
-    }
-
     // Allowlist fija ya vetted a mano — nunca pasa por curate_by_hint (ver
     // source_settings.curation_enabled=0 para esta fuente).
     all.extend(
@@ -143,12 +122,49 @@ async fn browse_online_library_inner(
     Ok(all)
 }
 
+/// Public Domain Torrents solo — a diferencia del grupo rápido, un fallo
+/// acá se propaga como `Err` en vez de loguearse y saltearse: es la única
+/// fuente de este comando, el frontend decide cómo mostrarlo (nota inline,
+/// no bloquea el resto de la pestaña Online que ya se renderizó aparte).
+async fn browse_public_domain_torrents_inner(
+    http: &reqwest::Client,
+    db: &Db,
+) -> Result<Vec<OnlineItem>, String> {
+    let (pdt_enabled, pdt_hint) = curation_settings_for(db, "public_domain_torrents")?;
+    let provider = try_build_active_provider(db)?;
+
+    let items = public_domain_torrents::browse(http)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut items: Vec<OnlineItem> = items.into_iter().map(online_item_from_pdt).collect();
+    if pdt_enabled {
+        if let Some(provider) = &provider {
+            items = curation::curate_by_hint(
+                provider.as_ref(),
+                items,
+                |i| i.title.as_str(),
+                pdt_hint.as_deref(),
+            )
+            .await;
+        }
+    }
+    Ok(items)
+}
+
 #[tauri::command]
 pub async fn browse_online_library(
     http: State<'_, HttpClient>,
     db: State<'_, Db>,
 ) -> Result<Vec<OnlineItem>, String> {
-    browse_online_library_inner(&http.0, &db).await
+    browse_online_library_fast_inner(&http.0, &db).await
+}
+
+#[tauri::command]
+pub async fn browse_public_domain_torrents(
+    http: State<'_, HttpClient>,
+    db: State<'_, Db>,
+) -> Result<Vec<OnlineItem>, String> {
+    browse_public_domain_torrents_inner(&http.0, &db).await
 }
 
 /// Descarga/agrega un ítem Online al motor y lo registra en `media_items`.

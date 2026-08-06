@@ -1,8 +1,18 @@
+use std::time::Duration;
+
 use anyhow::Context;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 const RSS_URL: &str = "https://www.publicdomaintorrents.info/bt/rss.php";
+
+/// Acota el peor caso por ítem — medido en vivo (2026-08-06): sin este
+/// límite, `browse()` con ~30 items concurrentes tardó 13.6s de punta a
+/// punta contra el sitio real, muy por encima de las demás fuentes
+/// Online (~1.5s archive.org). Un ítem que no responde a tiempo se trata
+/// igual que uno roto (se descarta, no aborta el resto) — no configurable
+/// por el usuario, es resiliencia interna igual que `http_retry::MAX_ATTEMPTS`.
+const DETAIL_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct PublicDomainMovie {
@@ -100,9 +110,15 @@ pub async fn browse(client: &reqwest::Client) -> anyhow::Result<Vec<PublicDomain
     for (_, link) in parse_rss(&rss_body) {
         let client = client.clone();
         set.spawn(async move {
-            let resp = crate::http_retry::send_with_retry(|| client.get(&link)).await.ok()?;
-            let html = resp.text().await.ok()?;
-            parse_detail_page(&html)
+            let fetch = async {
+                let resp = crate::http_retry::send_with_retry(|| client.get(&link)).await.ok()?;
+                let html = resp.text().await.ok()?;
+                parse_detail_page(&html)
+            };
+            // Envuelve la secuencia completa de reintentos, no un intento
+            // individual — un ítem que agota DETAIL_FETCH_TIMEOUT en total
+            // se descarta ahí mismo en vez de arrastrar el resto del batch.
+            tokio::time::timeout(DETAIL_FETCH_TIMEOUT, fetch).await.ok().flatten()
         });
     }
 
