@@ -5,13 +5,15 @@ import type { MediaItem } from "../types";
 
 type VideoPlayerProps =
   | { kind: "media"; item: MediaItem; onClose: () => void }
-  | { kind: "channel"; title: string; url: string; onClose: () => void };
+  | { kind: "channel"; title: string; url: string; onClose: () => void }
+  | { kind: "local"; path: string; name: string; onClose: () => void };
 
 export function VideoPlayer(props: VideoPlayerProps) {
   const { onClose, kind } = props;
-  const title = props.kind === "media" ? props.item.title : props.title;
+  const title = props.kind === "media" ? props.item.title : props.kind === "local" ? props.name : props.title;
   const mediaItemId = props.kind === "media" ? props.item.id : null;
   const channelUrl = props.kind === "channel" ? props.url : null;
+  const localPath = props.kind === "local" ? props.path : null;
 
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,8 +35,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // de abrir el player ("supervisión liviana", ver plan IPTV) — acá no
       // hay resolución adicional que hacer.
       setUrl(channelUrl);
+    } else if (kind === "local" && localPath) {
+      api.getLocalStreamUrl(localPath).then(setUrl).catch((e) => setError(String(e)));
     }
-  }, [kind, mediaItemId, channelUrl]);
+  }, [kind, mediaItemId, channelUrl, localPath]);
 
   useEffect(() => {
     if (kind !== "channel" || !url) return;
@@ -85,7 +89,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           {url && (
             <video
               ref={videoRef}
-              src={kind === "media" ? url : undefined}
+              src={kind !== "channel" ? url : undefined}
               controls
               autoPlay
               className="h-full w-full"
