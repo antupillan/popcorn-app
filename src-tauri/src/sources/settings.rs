@@ -25,6 +25,8 @@ pub async fn list_source_settings(db: State<'_, Db>) -> Result<Vec<SourceSetting
                    WHEN 'archive_org' THEN 'archive.org' \
                    WHEN 'public_domain_torrents' THEN 'Public Domain Torrents' \
                    WHEN 'blender_foundation' THEN 'Blender Foundation (Open Movies)' \
+                   WHEN 'prelinger' THEN 'Prelinger Archives' \
+                   WHEN 'feature_films' THEN 'Cine clásico (archive.org)' \
                  END \
                ) AS label, \
                s.curation_enabled, s.mediatype_filter \
@@ -101,6 +103,8 @@ mod tests {
                        WHEN 'archive_org' THEN 'archive.org' \
                        WHEN 'public_domain_torrents' THEN 'Public Domain Torrents' \
                        WHEN 'blender_foundation' THEN 'Blender Foundation (Open Movies)' \
+                       WHEN 'prelinger' THEN 'Prelinger Archives' \
+                       WHEN 'feature_films' THEN 'Cine clásico (archive.org)' \
                      END \
                    ) \
                  FROM source_settings s \
@@ -116,11 +120,12 @@ mod tests {
             .unwrap();
 
         // archive_org siempre primero (prioridad explícita en el ORDER BY);
-        // iptv_org_public/public_domain_torrents/blender_foundation son las
-        // otras filas semilla (ver migraciones); idx1/iptv1 son BYO
-        // agregadas por este test, en orden de inserción (rowid como
-        // desempate de created_at, que puede empatar al segundo entre filas
-        // creadas en la misma corrida).
+        // iptv_org_public/public_domain_torrents/blender_foundation/
+        // prelinger/feature_films son las otras filas semilla (ver
+        // migraciones, en orden de inserción); idx1/iptv1 son BYO agregadas
+        // por este test, en orden de inserción (rowid como desempate de
+        // created_at, que puede empatar al segundo entre filas creadas en la
+        // misma corrida).
         assert_eq!(
             rows,
             vec![
@@ -128,6 +133,8 @@ mod tests {
                 ("iptv_org_public".to_string(), "iptv-org: Canales públicos".to_string()),
                 ("public_domain_torrents".to_string(), "Public Domain Torrents".to_string()),
                 ("blender_foundation".to_string(), "Blender Foundation (Open Movies)".to_string()),
+                ("prelinger".to_string(), "Prelinger Archives".to_string()),
+                ("feature_films".to_string(), "Cine clásico (archive.org)".to_string()),
                 ("idx1".to_string(), "Mi Nyaa".to_string()),
                 ("iptv1".to_string(), "Mi lista IPTV".to_string()),
             ]

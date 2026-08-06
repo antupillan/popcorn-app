@@ -6,6 +6,12 @@ const SEARCH_URL: &str = "https://archive.org/advancedsearch.php";
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ArchiveOrgItem {
     pub identifier: String,
+    /// archive.org devuelve `title` como lista en vez de string cuando el
+    /// ítem tiene metadata con el campo repetido (confirmado en vivo contra
+    /// las colecciones de feature_films, 2026-08-06: `ColorCrazinessTheThreeStooges`
+    /// trae dos variantes del mismo título) — `deserialize_title` tolera
+    /// ambas formas y se queda con la primera.
+    #[serde(deserialize_with = "deserialize_title")]
     pub title: String,
     pub year: Option<i64>,
     pub licenseurl: Option<String>,
@@ -13,6 +19,25 @@ pub struct ArchiveOrgItem {
     /// `identifier` después de deserializar (ver `search`).
     #[serde(default)]
     pub thumbnail_url: String,
+}
+
+fn deserialize_title<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        One(String),
+        Many(Vec<String>),
+    }
+    match StringOrVec::deserialize(deserializer)? {
+        StringOrVec::One(s) => Ok(s),
+        StringOrVec::Many(v) => v
+            .into_iter()
+            .next()
+            .ok_or_else(|| serde::de::Error::custom("title vacío")),
+    }
 }
 
 #[derive(Deserialize)]
@@ -105,6 +130,43 @@ const BLENDER_FOUNDATION_ITEMS: &[(&str, &str, Option<i64>, Option<&str>)] = &[
     ("cosmos-laundromat", "Cosmos Laundromat", None, None),
 ];
 
+/// Browse acotado a una colección de archive.org en vez de todo el sitio —
+/// mismo mecanismo que `browse_movies` (mediatype:movies + orden por
+/// descargas) pero con `collection:(...)` sumado del lado del servidor, que
+/// reduce el ruido significativamente frente al browse sin acotar
+/// (confirmado en vivo, ver plan). `collection_query` es query Lucene tal
+/// cual — puede ser un solo id o varios unidos con OR.
+async fn browse_collection(
+    client: &reqwest::Client,
+    collection_query: &str,
+) -> anyhow::Result<Vec<ArchiveOrgItem>> {
+    search(
+        client,
+        &format!("collection:({collection_query})"),
+        Some("movies"),
+        Some("downloads desc"),
+    )
+    .await
+}
+
+/// Colección Prelinger: films educativos/industriales/históricos de
+/// dominio público curados por Rick Prelinger junto con Internet Archive —
+/// 10.460 ítems reales confirmados en vivo contra la API (2026-08-06).
+pub async fn browse_prelinger(client: &reqwest::Client) -> anyhow::Result<Vec<ArchiveOrgItem>> {
+    browse_collection(client, "prelinger").await
+}
+
+/// La colección `feature_films` completa de archive.org tiene 28.407 ítems
+/// reales, pero 17.552 (61%) están en `feature_films_unsorted` — un
+/// grab-bag sin curar. Estas cuatro sub-colecciones (7.577 ítems, medido en
+/// vivo 2026-08-06) son las que archive.org organiza por género real: cine
+/// mudo, comedia, noir, sci-fi/horror.
+const FEATURE_FILMS_COLLECTIONS: &str = "silent_films OR Comedy_Films OR Film_Noir OR SciFi_Horror";
+
+pub async fn browse_feature_films(client: &reqwest::Client) -> anyhow::Result<Vec<ArchiveOrgItem>> {
+    browse_collection(client, FEATURE_FILMS_COLLECTIONS).await
+}
+
 pub fn blender_foundation_items() -> Vec<ArchiveOrgItem> {
     BLENDER_FOUNDATION_ITEMS
         .iter()
@@ -186,6 +248,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deserializes_item_with_plain_string_title() {
+        let item: ArchiveOrgItem = serde_json::from_str(
+            r#"{"identifier":"x","title":"Un Título Normal","year":2020,"licenseurl":null}"#,
+        )
+        .unwrap();
+        assert_eq!(item.title, "Un Título Normal");
+    }
+
+    /// Caso real observado en vivo (2026-08-06,
+    /// `ColorCrazinessTheThreeStooges` en la colección feature_films):
+    /// archive.org devuelve `title` como lista cuando el ítem tiene el
+    /// campo repetido en su metadata — sin este fallback, `search()` entero
+    /// falla al deserializar el batch, no solo ese ítem.
+    #[test]
+    fn deserializes_item_with_title_as_array_taking_the_first_value() {
+        let item: ArchiveOrgItem = serde_json::from_str(
+            r#"{"identifier":"x","title":["Primero","Segundo"],"year":null,"licenseurl":null}"#,
+        )
+        .unwrap();
+        assert_eq!(item.title, "Primero");
+    }
+
+    #[test]
     fn blender_foundation_items_returns_the_five_verified_titles() {
         let items = blender_foundation_items();
         assert_eq!(items.len(), 5);
@@ -229,6 +314,26 @@ mod tests {
     async fn browse_movies_returns_real_results_sorted_by_downloads() {
         let client = reqwest::Client::new();
         let items = browse_movies(&client, Some("movies")).await.unwrap();
+        assert!(!items.is_empty());
+    }
+
+    /// Red real, deshabilitado por defecto. Confirma que la colección
+    /// Prelinger sigue respondiendo con ítems reales.
+    #[tokio::test]
+    #[ignore]
+    async fn browse_prelinger_returns_real_results() {
+        let client = reqwest::Client::new();
+        let items = browse_prelinger(&client).await.unwrap();
+        assert!(!items.is_empty());
+    }
+
+    /// Red real, deshabilitado por defecto. Confirma que las cuatro
+    /// sub-colecciones curadas de feature_films siguen respondiendo.
+    #[tokio::test]
+    #[ignore]
+    async fn browse_feature_films_returns_real_results_from_curated_subcollections() {
+        let client = reqwest::Client::new();
+        let items = browse_feature_films(&client).await.unwrap();
         assert!(!items.is_empty());
     }
 }

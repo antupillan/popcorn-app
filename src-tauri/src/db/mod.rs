@@ -183,6 +183,23 @@ const MIGRATIONS: &[&str] = &[
     DROP TABLE media_items;
     ALTER TABLE media_items_new RENAME TO media_items;
     "#,
+    r#"
+    -- Dos colecciones curadas de archive.org nuevas para Online (misma
+    -- confianza que archive_org/public_domain_torrents: catálogo legal
+    -- verificado por la app, no BYO). No suman source_type nuevo en
+    -- media_items — resuelven por identifier de archive.org igual que
+    -- archive_org/blender_foundation (ver online_library.rs). Ambas con
+    -- curación activa a diferencia de blender_foundation: son colecciones
+    -- grandes de calidad mixta, no una allowlist vetted título por título.
+    INSERT INTO source_settings (id, curation_hint) VALUES (
+        'prelinger',
+        'films reales de la colección Prelinger (educativos, industriales, históricos), no fragmentos técnicos ni duplicados'
+    );
+    INSERT INTO source_settings (id, curation_hint) VALUES (
+        'feature_films',
+        'películas reales de las colecciones de cine clásico de archive.org, no rips de baja calidad ni duplicados'
+    );
+    "#,
 ];
 
 fn db_path(app: &AppHandle) -> Result<PathBuf> {
@@ -316,7 +333,25 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM source_settings", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 4, "archive_org + iptv_org_public + public_domain_torrents + blender_foundation son las cuatro fuentes built-in; el resto se crea al agregar una fuente BYO");
+        assert_eq!(count, 6, "archive_org + iptv_org_public + public_domain_torrents + blender_foundation + prelinger + feature_films son las seis fuentes built-in; el resto se crea al agregar una fuente BYO");
+    }
+
+    #[test]
+    fn source_settings_seeds_prelinger_and_feature_films_with_curation_enabled() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        for id in ["prelinger", "feature_films"] {
+            let (curation_enabled, hint): (i64, Option<String>) = conn
+                .query_row(
+                    "SELECT curation_enabled, curation_hint FROM source_settings WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(curation_enabled, 1, "{id} es una colección grande de calidad mixta, no una allowlist vetted a mano");
+            assert!(hint.is_some(), "{id} debe traer curation_hint seteado por la migración");
+        }
     }
 
     #[test]

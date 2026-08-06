@@ -9,15 +9,16 @@ use crate::db::Db;
 use crate::engine::{AddTorrentSource, TorrentEngine, TorrentInfo};
 use crate::sources::{archive_org, public_domain_torrents};
 
-/// Ítem unificado de las tres fuentes Online (ver plan, Biblioteca
-/// unificada) — `kind` distingue de qué catálogo salió, no necesariamente
-/// del `media_items.source_type` que termina en DB: archive.org y Blender
-/// Foundation comparten `source_type='archive_org'` (Blender no tiene fila
-/// propia en el CHECK, ver migración), solo `kind` los distingue del lado
-/// del frontend/curación.
+/// Ítem unificado de las fuentes Online (ver plan, Biblioteca unificada) —
+/// `kind` distingue de qué catálogo salió, no necesariamente del
+/// `media_items.source_type` que termina en DB: archive.org, Blender
+/// Foundation, Prelinger y feature_films comparten todos
+/// `source_type='archive_org'` (ninguno tiene fila propia en el CHECK, ver
+/// migración) porque los cuatro resuelven por identifier de archive.org —
+/// solo `kind` los distingue del lado del frontend/curación.
 #[derive(Serialize, Clone)]
 pub struct OnlineItem {
-    pub kind: String, // "archive_org" | "public_domain_torrents" | "blender_foundation"
+    pub kind: String, // "archive_org" | "public_domain_torrents" | "blender_foundation" | "prelinger" | "feature_films"
     pub identifier: String,
     pub title: String,
     pub year: Option<i64>,
@@ -86,10 +87,23 @@ async fn browse_online_library_fast_inner(
 ) -> Result<Vec<OnlineItem>, String> {
     let mediatype_filter = archive_org_mediatype_filter(db)?;
     let (archive_org_enabled, archive_org_hint) = curation_settings_for(db, "archive_org")?;
+    let (prelinger_enabled, prelinger_hint) = curation_settings_for(db, "prelinger")?;
+    let (feature_films_enabled, feature_films_hint) = curation_settings_for(db, "feature_films")?;
     let provider = try_build_active_provider(db)?;
 
+    // Las tres fuentes de archive.org (browse general + dos colecciones
+    // curadas) son requests independientes al mismo sitio, ~1-2s cada una
+    // medido en vivo — correrlas en paralelo mantiene el grupo "rápido"
+    // rápido de verdad en vez de sumar sus latencias.
+    let (archive_org_result, prelinger_result, feature_films_result) = tokio::join!(
+        archive_org::browse_movies(http, mediatype_filter.as_deref()),
+        archive_org::browse_prelinger(http),
+        archive_org::browse_feature_films(http),
+    );
+
     let mut all = Vec::new();
-    match archive_org::browse_movies(http, mediatype_filter.as_deref()).await {
+
+    match archive_org_result {
         Ok(items) => {
             let mut items: Vec<OnlineItem> = items
                 .into_iter()
@@ -109,6 +123,50 @@ async fn browse_online_library_fast_inner(
             all.append(&mut items);
         }
         Err(e) => eprintln!("[popcorn] fuente Online 'archive_org' falló: {e}"),
+    }
+
+    match prelinger_result {
+        Ok(items) => {
+            let mut items: Vec<OnlineItem> = items
+                .into_iter()
+                .map(|i| online_item_from_archive_org("prelinger", i))
+                .collect();
+            if prelinger_enabled {
+                if let Some(provider) = &provider {
+                    items = curation::curate_by_hint(
+                        provider.as_ref(),
+                        items,
+                        |i| i.title.as_str(),
+                        prelinger_hint.as_deref(),
+                    )
+                    .await;
+                }
+            }
+            all.append(&mut items);
+        }
+        Err(e) => eprintln!("[popcorn] fuente Online 'prelinger' falló: {e}"),
+    }
+
+    match feature_films_result {
+        Ok(items) => {
+            let mut items: Vec<OnlineItem> = items
+                .into_iter()
+                .map(|i| online_item_from_archive_org("feature_films", i))
+                .collect();
+            if feature_films_enabled {
+                if let Some(provider) = &provider {
+                    items = curation::curate_by_hint(
+                        provider.as_ref(),
+                        items,
+                        |i| i.title.as_str(),
+                        feature_films_hint.as_deref(),
+                    )
+                    .await;
+                }
+            }
+            all.append(&mut items);
+        }
+        Err(e) => eprintln!("[popcorn] fuente Online 'feature_films' falló: {e}"),
     }
 
     // Allowlist fija ya vetted a mano — nunca pasa por curate_by_hint (ver
@@ -168,10 +226,11 @@ pub async fn browse_public_domain_torrents(
 }
 
 /// Descarga/agrega un ítem Online al motor y lo registra en `media_items`.
-/// `kind` despacha: "archive_org"/"blender_foundation" comparten
-/// `add_archive_org_item_core` (ambos son ítems de archive.org, ver
-/// `OnlineItem`); "public_domain_torrents" tiene su propio flujo — sin
-/// fallback HTTP (P2P puro, limitación conocida, ver plan).
+/// `kind` despacha: "archive_org"/"blender_foundation"/"prelinger"/
+/// "feature_films" comparten `add_archive_org_item_core` (los cuatro son
+/// ítems de archive.org, ver `OnlineItem`); "public_domain_torrents" tiene
+/// su propio flujo — sin fallback HTTP (P2P puro, limitación conocida, ver
+/// plan).
 async fn add_online_item_inner(
     http: &reqwest::Client,
     engine: &Arc<dyn TorrentEngine>,
@@ -183,7 +242,7 @@ async fn add_online_item_inner(
     license: Option<String>,
 ) -> Result<TorrentInfo, String> {
     match kind {
-        "archive_org" | "blender_foundation" => {
+        "archive_org" | "blender_foundation" | "prelinger" | "feature_films" => {
             add_archive_org_item_core(http, engine, db, identifier, title, year, license).await
         }
         "public_domain_torrents" => {
