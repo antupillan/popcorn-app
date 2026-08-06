@@ -134,6 +134,55 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE source_settings ADD COLUMN curation_hint TEXT;
     UPDATE source_settings SET curation_hint = 'radiodifusores públicos oficiales' WHERE id = 'iptv_org_public';
     "#,
+    r#"
+    -- Config local clave-valor genérica (hoy solo `local_library_folder`) —
+    -- evita una migración nueva por cada preferencia suelta que no amerita
+    -- su propia tabla tipada.
+    CREATE TABLE app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    "#,
+    r#"
+    -- Seeds de source_settings para las fuentes Online nuevas (Biblioteca
+    -- unificada). A diferencia de `indexers` (cero filas semilla, blindaje
+    -- legal contra copyright arbitrario), estas dos son catálogo legal
+    -- verificado por la app misma, mismo criterio que la fila 'archive_org'
+    -- ya sembrada. `blender_foundation` desactiva curación: es una allowlist
+    -- ya vetted título por título a mano, someterla a IA no suma nada.
+    INSERT INTO source_settings (id, curation_hint) VALUES (
+        'public_domain_torrents',
+        'películas reales de dominio público del catálogo de publicdomaintorrents.info, no basura ni entradas rotas del feed'
+    );
+    INSERT INTO source_settings (id, curation_enabled, curation_hint) VALUES (
+        'blender_foundation', 0,
+        'cortos y películas oficiales de Blender Foundation / Blender Studio'
+    );
+    UPDATE source_settings SET curation_hint =
+      'películas reales, no archivos de prueba, demos técnicos ni vlogs genéricos'
+      WHERE id = 'archive_org';
+    "#,
+    r#"
+    -- SQLite no soporta ALTER TABLE ... DROP CHECK: agregar
+    -- 'public_domain_torrents' como source_type válido exige reconstruir la
+    -- tabla. Nada referencia media_items.id como FK entrante hoy, no hace
+    -- falta PRAGMA foreign_keys=OFF/ON.
+    CREATE TABLE media_items_new (
+        id TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL CHECK (source_type IN
+            ('archive_org', 'magnet', 'torrent_file', 'public_domain_torrents')),
+        source_identifier TEXT NOT NULL,
+        title TEXT NOT NULL,
+        year INTEGER,
+        license TEXT,
+        engine_torrent_id TEXT,
+        is_private INTEGER NOT NULL DEFAULT 0,
+        added_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO media_items_new SELECT * FROM media_items;
+    DROP TABLE media_items;
+    ALTER TABLE media_items_new RENAME TO media_items;
+    "#,
 ];
 
 fn db_path(app: &AppHandle) -> Result<PathBuf> {
@@ -267,11 +316,11 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM source_settings", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 2, "archive_org + iptv_org_public son las dos fuentes built-in; el resto se crea al agregar una fuente BYO");
+        assert_eq!(count, 4, "archive_org + iptv_org_public + public_domain_torrents + blender_foundation son las cuatro fuentes built-in; el resto se crea al agregar una fuente BYO");
     }
 
     #[test]
-    fn curation_hint_defaults_null_except_for_iptv_org_public_seed() {
+    fn curation_hint_defaults_null_except_for_seeded_sources() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
 
@@ -282,7 +331,11 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(archive_org_hint, None, "archive_org no tiene hint propio — su curación es la de CURATE_RESULTS_SYSTEM_PROMPT, no la de canales");
+        assert_eq!(
+            archive_org_hint.as_deref(),
+            Some("películas reales, no archivos de prueba, demos técnicos ni vlogs genéricos"),
+            "seteado por la migración de Biblioteca unificada — la app vouches por el criterio de su propio catálogo por defecto"
+        );
 
         let iptv_public_hint: Option<String> = conn
             .query_row(
@@ -370,5 +423,87 @@ mod tests {
             [],
         );
         assert!(bad_status.is_err(), "el CHECK debe rechazar un status fuera de ('recording','stopped','error')");
+    }
+
+    #[test]
+    fn app_settings_table_starts_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM app_settings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "config clave-valor genérica, sin defaults precargados");
+
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('local_library_folder', '/home/user/Videos')",
+            [],
+        )
+        .unwrap();
+        let value: String = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = 'local_library_folder'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, "/home/user/Videos");
+    }
+
+    #[test]
+    fn source_settings_seeds_public_domain_torrents_and_blender_foundation_with_expected_curation_defaults() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let (curation_enabled, curation_hint): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT curation_enabled, curation_hint FROM source_settings WHERE id = 'public_domain_torrents'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(curation_enabled, 1, "sin allowlist propia, la curación por IA sí aporta acá");
+        assert_eq!(
+            curation_hint.as_deref(),
+            Some("películas reales de dominio público del catálogo de publicdomaintorrents.info, no basura ni entradas rotas del feed")
+        );
+
+        let (curation_enabled, curation_hint): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT curation_enabled, curation_hint FROM source_settings WHERE id = 'blender_foundation'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(curation_enabled, 0, "allowlist ya vetted a mano, título por título — someterla a IA no suma nada");
+        assert_eq!(
+            curation_hint.as_deref(),
+            Some("cortos y películas oficiales de Blender Foundation / Blender Studio")
+        );
+    }
+
+    #[test]
+    fn media_items_check_accepts_public_domain_torrents_source_type() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO media_items (id, source_type, source_identifier, title) \
+             VALUES ('pdt1', 'public_domain_torrents', 'nosferatu', 'Nosferatu')",
+            [],
+        )
+        .unwrap();
+
+        let title: String = conn
+            .query_row("SELECT title FROM media_items WHERE id = 'pdt1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "Nosferatu");
+
+        let bad = conn.execute(
+            "INSERT INTO media_items (id, source_type, source_identifier, title) \
+             VALUES ('bad1', 'not_a_real_source_type', 'x', 'x')",
+            [],
+        );
+        assert!(bad.is_err(), "el CHECK reconstruido debe seguir rechazando source_type desconocidos");
     }
 }

@@ -19,7 +19,15 @@ pub async fn list_source_settings(db: State<'_, Db>) -> Result<Vec<SourceSetting
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT s.id, COALESCE(i.name, v.name, 'archive.org'), s.curation_enabled, s.mediatype_filter \
+            "SELECT s.id, \
+               COALESCE(i.name, v.name, \
+                 CASE s.id \
+                   WHEN 'archive_org' THEN 'archive.org' \
+                   WHEN 'public_domain_torrents' THEN 'Public Domain Torrents' \
+                   WHEN 'blender_foundation' THEN 'Blender Foundation (Open Movies)' \
+                 END \
+               ) AS label, \
+               s.curation_enabled, s.mediatype_filter \
              FROM source_settings s \
              LEFT JOIN indexers i ON i.id = s.id \
              LEFT JOIN iptv_sources v ON v.id = s.id \
@@ -87,7 +95,14 @@ mod tests {
 
         let mut stmt = conn
             .prepare(
-                "SELECT s.id, COALESCE(i.name, v.name, 'archive.org') \
+                "SELECT s.id, \
+                   COALESCE(i.name, v.name, \
+                     CASE s.id \
+                       WHEN 'archive_org' THEN 'archive.org' \
+                       WHEN 'public_domain_torrents' THEN 'Public Domain Torrents' \
+                       WHEN 'blender_foundation' THEN 'Blender Foundation (Open Movies)' \
+                     END \
+                   ) \
                  FROM source_settings s \
                  LEFT JOIN indexers i ON i.id = s.id \
                  LEFT JOIN iptv_sources v ON v.id = s.id \
@@ -101,15 +116,18 @@ mod tests {
             .unwrap();
 
         // archive_org siempre primero (prioridad explícita en el ORDER BY);
-        // iptv_org_public es la otra fila semilla (ver migración
-        // iptv_sources); idx1/iptv1 son BYO agregadas por este test, en
-        // orden de inserción (rowid como desempate de created_at, que puede
-        // empatar al segundo entre filas creadas en la misma corrida).
+        // iptv_org_public/public_domain_torrents/blender_foundation son las
+        // otras filas semilla (ver migraciones); idx1/iptv1 son BYO
+        // agregadas por este test, en orden de inserción (rowid como
+        // desempate de created_at, que puede empatar al segundo entre filas
+        // creadas en la misma corrida).
         assert_eq!(
             rows,
             vec![
                 ("archive_org".to_string(), "archive.org".to_string()),
                 ("iptv_org_public".to_string(), "iptv-org: Canales públicos".to_string()),
+                ("public_domain_torrents".to_string(), "Public Domain Torrents".to_string()),
+                ("blender_foundation".to_string(), "Blender Foundation (Open Movies)".to_string()),
                 ("idx1".to_string(), "Mi Nyaa".to_string()),
                 ("iptv1".to_string(), "Mi lista IPTV".to_string()),
             ]
