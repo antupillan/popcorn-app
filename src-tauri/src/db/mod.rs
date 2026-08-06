@@ -124,7 +124,7 @@ const MIGRATIONS: &[&str] = &[
     -- `source_settings` ya está commiteada de una sesión anterior — no se
     -- edita esa migración (log, no snapshot), se agrega la columna acá.
     -- Criterio de curación en texto libre, por fuente. Nulo en BYO por
-    -- defecto (el usuario lo escribe si quiere, ver curate_channels): "el
+    -- defecto (el usuario lo escribe si quiere, ver curate_by_hint): "el
     -- usuario agregó la lista, la curación sigue sus propios parámetros, no
     -- un juicio de legalidad de la app" (mismo principio que indexers: cero
     -- filas semilla, el contenido BYO es responsabilidad de quien lo agrega).

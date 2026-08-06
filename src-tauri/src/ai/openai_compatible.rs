@@ -3,8 +3,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    build_channel_curation_user_text, build_curation_user_text, extract_index_list,
-    extract_structured_query, AiProvider, StructuredQuery, CURATE_CHANNELS_SYSTEM_PROMPT,
+    build_curation_user_text, build_hint_curation_user_text, extract_index_list,
+    extract_structured_query, AiProvider, StructuredQuery, CURATE_BY_HINT_SYSTEM_PROMPT,
     CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
 };
 
@@ -131,17 +131,17 @@ impl AiProvider for OpenAiCompatibleProvider {
         parse_curation_response_body(&raw_body)
     }
 
-    async fn curate_channels(
+    async fn curate_by_hint(
         &self,
         candidates: &[String],
         hint: Option<&str>,
     ) -> anyhow::Result<Vec<usize>> {
         let url = format!("{}/chat/completions", self.base_url);
-        let text = build_channel_curation_user_text(candidates, hint);
+        let text = build_hint_curation_user_text(candidates, hint);
         let body = json!({
             "model": self.model,
             "messages": [
-                {"role": "system", "content": CURATE_CHANNELS_SYSTEM_PROMPT},
+                {"role": "system", "content": CURATE_BY_HINT_SYSTEM_PROMPT},
                 {"role": "user", "content": text}
             ],
             "response_format": {"type": "json_object"}

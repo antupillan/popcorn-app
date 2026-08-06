@@ -38,12 +38,13 @@ pub(crate) async fn curate<T>(
     }
 }
 
-/// Igual forma fail-open/corte-en-vacío que `curate<T>`, pero para canales
-/// IPTV — deliberadamente no parametrizado para compartir código con
-/// `curate<T>`: la firma real difiere (sin `StructuredQuery`, llama a
-/// `curate_channels` en vez de `curate_results`), no es la misma lógica
-/// disfrazada de reusable.
-pub(crate) async fn curate_channels<T>(
+/// Igual forma fail-open/corte-en-vacío que `curate<T>`, pero por criterio en
+/// texto libre en vez de `StructuredQuery` — sirve tanto a canales IPTV como
+/// a catálogo Online (Biblioteca unificada). Deliberadamente no parametrizado
+/// para compartir código con `curate<T>`: la firma real difiere (sin
+/// `StructuredQuery`, llama a `curate_by_hint` en vez de `curate_results`),
+/// no es la misma lógica disfrazada de reusable.
+pub(crate) async fn curate_by_hint<T>(
     provider: &dyn AiProvider,
     items: Vec<T>,
     title_of: impl Fn(&T) -> &str,
@@ -53,7 +54,7 @@ pub(crate) async fn curate_channels<T>(
         return items;
     }
     let candidates: Vec<String> = items.iter().map(|i| title_of(i).to_string()).collect();
-    match provider.curate_channels(&candidates, hint).await {
+    match provider.curate_by_hint(&candidates, hint).await {
         Ok(indices) => {
             let mut slots: Vec<Option<T>> = items.into_iter().map(Some).collect();
             indices
@@ -63,7 +64,7 @@ pub(crate) async fn curate_channels<T>(
         }
         Err(e) => {
             eprintln!(
-                "[popcorn] curación de canales IA falló ({}), devolviendo canales sin curar: {e}",
+                "[popcorn] curación por hint IA falló ({}), devolviendo ítems sin curar: {e}",
                 provider.name()
             );
             items
@@ -92,7 +93,7 @@ mod tests {
         ) -> anyhow::Result<Vec<usize>> {
             Ok(self.0.clone())
         }
-        async fn curate_channels(
+        async fn curate_by_hint(
             &self,
             _candidates: &[String],
             _hint: Option<&str>,
@@ -117,7 +118,7 @@ mod tests {
         ) -> anyhow::Result<Vec<usize>> {
             Err(anyhow::anyhow!("boom"))
         }
-        async fn curate_channels(
+        async fn curate_by_hint(
             &self,
             _candidates: &[String],
             _hint: Option<&str>,
@@ -142,12 +143,12 @@ mod tests {
         ) -> anyhow::Result<Vec<usize>> {
             panic!("curate no debe llamar al proveedor con una lista de candidatos vacía");
         }
-        async fn curate_channels(
+        async fn curate_by_hint(
             &self,
             _candidates: &[String],
             _hint: Option<&str>,
         ) -> anyhow::Result<Vec<usize>> {
-            panic!("curate_channels no debe llamar al proveedor con una lista de candidatos vacía");
+            panic!("curate_by_hint no debe llamar al proveedor con una lista de candidatos vacía");
         }
     }
 
@@ -188,39 +189,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn curate_channels_filters_and_reorders_by_returned_indices() {
+    async fn curate_by_hint_filters_and_reorders_by_returned_indices() {
         let provider = OkProvider(vec![2, 0]);
         let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let result = curate_channels(&provider, items, |s| s.as_str(), None).await;
+        let result = curate_by_hint(&provider, items, |s| s.as_str(), None).await;
         assert_eq!(result, vec!["c".to_string(), "a".to_string()]);
     }
 
     #[tokio::test]
-    async fn curate_channels_ignores_out_of_range_indices() {
+    async fn curate_by_hint_ignores_out_of_range_indices() {
         let provider = OkProvider(vec![5, 1]);
         let items = vec!["a".to_string(), "b".to_string()];
-        let result = curate_channels(&provider, items, |s| s.as_str(), None).await;
+        let result = curate_by_hint(&provider, items, |s| s.as_str(), None).await;
         assert_eq!(result, vec!["b".to_string()]);
     }
 
     #[tokio::test]
-    async fn curate_channels_fails_open_on_provider_error() {
+    async fn curate_by_hint_fails_open_on_provider_error() {
         let provider = ErrProvider;
         let items = vec!["a".to_string(), "b".to_string()];
-        let result = curate_channels(&provider, items.clone(), |s| s.as_str(), None).await;
+        let result = curate_by_hint(&provider, items.clone(), |s| s.as_str(), None).await;
         assert_eq!(result, items);
     }
 
     #[tokio::test]
-    async fn curate_channels_skips_provider_call_for_empty_input() {
+    async fn curate_by_hint_skips_provider_call_for_empty_input() {
         let provider = PanicIfCalledProvider;
         let items: Vec<String> = vec![];
-        let result = curate_channels(&provider, items, |s| s.as_str(), None).await;
+        let result = curate_by_hint(&provider, items, |s| s.as_str(), None).await;
         assert!(result.is_empty());
     }
 
     #[tokio::test]
-    async fn curate_channels_passes_hint_through_to_the_provider() {
+    async fn curate_by_hint_passes_hint_through_to_the_provider() {
         struct HintCapturingProvider(std::sync::Mutex<Option<String>>);
         #[async_trait]
         impl AiProvider for HintCapturingProvider {
@@ -237,7 +238,7 @@ mod tests {
             ) -> anyhow::Result<Vec<usize>> {
                 unreachable!("no lo usa este test")
             }
-            async fn curate_channels(
+            async fn curate_by_hint(
                 &self,
                 _candidates: &[String],
                 hint: Option<&str>,
@@ -249,7 +250,7 @@ mod tests {
 
         let provider = HintCapturingProvider(std::sync::Mutex::new(None));
         let items = vec!["Canal 24 Horas".to_string()];
-        curate_channels(&provider, items, |s| s.as_str(), Some("radiodifusores públicos oficiales")).await;
+        curate_by_hint(&provider, items, |s| s.as_str(), Some("radiodifusores públicos oficiales")).await;
         assert_eq!(
             provider.0.into_inner().unwrap().as_deref(),
             Some("radiodifusores públicos oficiales")

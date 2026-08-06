@@ -265,7 +265,7 @@ pub async fn list_channels(
                 if let Some(provider) = &provider {
                     if curation_enabled_for(&db, &source.id)? {
                         let hint = curation_hint_for(&db, &source.id)?;
-                        channels = curation::curate_channels(
+                        channels = curation::curate_by_hint(
                             provider.as_ref(),
                             channels,
                             |c| c.name.as_str(),

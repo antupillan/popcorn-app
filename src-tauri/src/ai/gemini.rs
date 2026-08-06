@@ -3,8 +3,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    build_channel_curation_user_text, build_curation_user_text, extract_index_list,
-    extract_structured_query, AiProvider, StructuredQuery, CURATE_CHANNELS_SYSTEM_PROMPT,
+    build_curation_user_text, build_hint_curation_user_text, extract_index_list,
+    extract_structured_query, AiProvider, StructuredQuery, CURATE_BY_HINT_SYSTEM_PROMPT,
     CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
 };
 
@@ -123,16 +123,16 @@ impl AiProvider for GeminiProvider {
         parse_curation_response_body(&raw_body)
     }
 
-    async fn curate_channels(
+    async fn curate_by_hint(
         &self,
         candidates: &[String],
         hint: Option<&str>,
     ) -> anyhow::Result<Vec<usize>> {
         let url = format!("{API_BASE}/models/{}:generateContent", self.model);
-        let text = build_channel_curation_user_text(candidates, hint);
+        let text = build_hint_curation_user_text(candidates, hint);
         let body = json!({
             "contents": [{"parts": [{"text": text}]}],
-            "systemInstruction": {"parts": [{"text": CURATE_CHANNELS_SYSTEM_PROMPT}]},
+            "systemInstruction": {"parts": [{"text": CURATE_BY_HINT_SYSTEM_PROMPT}]},
             "generationConfig": {"responseMimeType": "application/json"}
         });
         let raw_body = crate::http_retry::send_with_retry(|| {

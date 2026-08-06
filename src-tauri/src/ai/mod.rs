@@ -37,15 +37,17 @@ pub trait AiProvider: Send + Sync {
     ) -> anyhow::Result<Vec<usize>>;
     /// Igual forma que `curate_results` (índices base 0, orden de
     /// relevancia) pero sin `query` que matchear — `hint` es el criterio en
-    /// texto libre que define quién manda: para la fuente semilla
-    /// `iptv_org_public` es la app la que lo fija ("radiodifusores públicos
+    /// texto libre que define quién manda: para una fuente semilla (ej.
+    /// `iptv_org_public`) es la app la que lo fija ("radiodifusores públicos
     /// oficiales"); para una fuente BYO que el usuario agregó él mismo, el
     /// criterio es el que el usuario haya escrito (o ninguno). La app nunca
     /// impone su propio juicio de legitimidad sobre una lista que el usuario
     /// eligió agregar — mismo principio que `indexers` (cero filas semilla,
-    /// contenido BYO es responsabilidad de quien lo agrega). Ver
-    /// `CURATE_CHANNELS_SYSTEM_PROMPT`.
-    async fn curate_channels(
+    /// contenido BYO es responsabilidad de quien lo agrega). Sirve tanto a
+    /// canales IPTV como a catálogo Online (Biblioteca unificada) — el
+    /// criterio vive enteramente en `hint`, no en el prompt fijo. Ver
+    /// `CURATE_BY_HINT_SYSTEM_PROMPT`.
+    async fn curate_by_hint(
         &self,
         candidates: &[String],
         hint: Option<&str>,
@@ -85,31 +87,34 @@ pub(crate) fn build_curation_user_text(query: &StructuredQuery, candidates: &[St
     format!("Búsqueda: {}\n\nCandidatos:\n{list}", query.title)
 }
 
-/// Prompt fijo para curar canales IPTV (Mandato 8) — a diferencia de
-/// `CURATE_RESULTS_SYSTEM_PROMPT`, no hay búsqueda que matchear, hay un
-/// `hint` en texto libre que define el criterio: cuando lo da la app (fuente
-/// semilla `iptv_org_public`) es "verificar legitimidad como radiodifusor
-/// público"; cuando lo da el usuario (fuente BYO) es lo que el usuario haya
-/// escrito. El prompt en sí queda fijo — el criterio variable vive en el
-/// mensaje de usuario (`build_channel_curation_user_text`), igual que la
-/// búsqueda ya viaja en el mensaje de usuario para `curate_results`, nunca
-/// en el prompt de sistema. Mismo contrato `{"indices": [...]}` que
+/// Prompt fijo para curar por criterio en texto libre (Mandato 8) — sirve
+/// tanto a canales IPTV como a catálogo Online (Biblioteca unificada), a
+/// diferencia de `CURATE_RESULTS_SYSTEM_PROMPT` no hay búsqueda que
+/// matchear, hay un `hint` que define el criterio: cuando lo da la app
+/// (fuente semilla, ej. `iptv_org_public`) es su propio criterio de
+/// legitimidad/calidad; cuando lo da el usuario (fuente BYO) es lo que el
+/// usuario haya escrito. El prompt en sí queda fijo — el criterio variable
+/// vive en el mensaje de usuario (`build_hint_curation_user_text`), igual
+/// que la búsqueda ya viaja en el mensaje de usuario para `curate_results`,
+/// nunca en el prompt de sistema. Mismo contrato `{"indices": [...]}` que
 /// `CURATE_RESULTS_SYSTEM_PROMPT` por la misma razón (modo JSON forzado de
 /// OpenAI exige objeto, no array).
-pub(crate) const CURATE_CHANNELS_SYSTEM_PROMPT: &str = "Sos un filtro de canales de TV para listas IPTV agregadas de internet, que mezclan canales legítimos con entradas rotas, duplicadas o de dudosa procedencia. \
-Se te da un criterio de curación y una lista numerada de nombres de canal (con su categoría entre paréntesis cuando está disponible). \
+pub(crate) const CURATE_BY_HINT_SYSTEM_PROMPT: &str = "Sos un filtro de curación para listas de contenido agregadas de internet (canales de TV en vivo o catálogo de video), que mezclan entradas legítimas con basura, duplicados, entradas rotas o de dudosa procedencia. \
+Se te da un criterio de curación y una lista numerada de candidatos (nombre de canal o título, con categoría/género entre paréntesis cuando está disponible). \
 Devolvé ÚNICAMENTE un objeto JSON con esta forma exacta, sin texto adicional: {\"indices\": [number, ...]}. \
-`indices` son los índices (enteros, base 0) de los canales que cumplen el criterio dado, ordenados del más al menos ajustado a ese criterio. \
+`indices` son los índices (enteros, base 0) de los candidatos que cumplen el criterio dado, ordenados del más al menos ajustado a ese criterio. \
 Si el criterio pide verificar legitimidad como radiodifusor público/oficial, juzgalo por el nombre y la categoría — excluí spam, placeholders, duplicados evidentes y canales comerciales/privados sin relación con radiodifusión pública. \
-Si no se da ningún criterio, aplicá ese mismo criterio de legitimidad por defecto. \
+Si el criterio pide contenido real de un catálogo (ej. películas), excluí archivos de prueba, demos técnicos, vlogs genéricos y entradas rotas o sin relación evidente con el criterio. \
+Si no se da ningún criterio, aplicá el criterio de legitimidad/calidad que mejor corresponda al tipo de candidatos dado. \
 No inventes índices que no estén en la lista de candidatos. Si ningún candidato cumple el criterio, devolvé {\"indices\": []}. \
 Nunca sugieras sitios, URLs, ni agregues texto, explicación o markdown fuera del objeto JSON.";
 
-/// Arma el texto de usuario para `curate_channels`: criterio (`hint`, si lo
+/// Arma el texto de usuario para `curate_by_hint`: criterio (`hint`, si lo
 /// hay) + lista numerada de candidatos, mismo formato para cualquier
 /// proveedor. Sin `hint`, el prompt de sistema ya sabe aplicar el default
-/// de legitimidad — acá simplemente no se agrega la línea de criterio.
-pub(crate) fn build_channel_curation_user_text(candidates: &[String], hint: Option<&str>) -> String {
+/// de legitimidad/calidad — acá simplemente no se agrega la línea de
+/// criterio.
+pub(crate) fn build_hint_curation_user_text(candidates: &[String], hint: Option<&str>) -> String {
     let list = candidates
         .iter()
         .enumerate()
