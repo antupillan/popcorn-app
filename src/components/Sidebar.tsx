@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 
-export type View = "library" | "torrents" | "channels";
+export type View = "biblioteca" | "torrents";
 
 interface SidebarProps {
   active: View;
@@ -60,13 +60,6 @@ const TorrentIcon = () => (
   </svg>
 );
 
-const ChannelsIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-4 w-4">
-    <path d="M4 15a8 8 0 0 1 16 0M7.5 15a4.5 4.5 0 0 1 9 0" />
-    <circle cx="12" cy="15" r="1.25" fill="currentColor" stroke="none" />
-  </svg>
-);
-
 export function Sidebar({ active, onSelect, torrentCount }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
 
@@ -95,11 +88,11 @@ export function Sidebar({ active, onSelect, torrentCount }: SidebarProps) {
 
       <nav className="flex flex-1 flex-col gap-1 p-2">
         <NavItem
-          label="Colección"
+          label="Biblioteca"
           icon={<LibraryIcon />}
-          isActive={active === "library"}
+          isActive={active === "biblioteca"}
           isCollapsed={isCollapsed}
-          onClick={() => onSelect("library")}
+          onClick={() => onSelect("biblioteca")}
         />
         <NavItem
           label="Torrents"
@@ -108,13 +101,6 @@ export function Sidebar({ active, onSelect, torrentCount }: SidebarProps) {
           isCollapsed={isCollapsed}
           badge={torrentCount}
           onClick={() => onSelect("torrents")}
-        />
-        <NavItem
-          label="Canales"
-          icon={<ChannelsIcon />}
-          isActive={active === "channels"}
-          isCollapsed={isCollapsed}
-          onClick={() => onSelect("channels")}
         />
       </nav>
     </aside>

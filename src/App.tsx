@@ -4,14 +4,16 @@ import type { View } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { AddTorrentModal } from "./components/AddTorrentModal";
 import { TorrentList } from "./components/TorrentList";
-import { MediaLibrary } from "./components/MediaLibrary";
+import { Biblioteca } from "./components/Biblioteca";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { FirstRunScreen } from "./components/FirstRunScreen";
-import { IptvView } from "./components/IptvView";
 import { api } from "./lib/api";
 import type { MediaItem, TorrentInfo } from "./types";
 
-type Playing = { kind: "media"; item: MediaItem } | { kind: "channel"; title: string; url: string };
+type Playing =
+  | { kind: "media"; item: MediaItem }
+  | { kind: "channel"; title: string; url: string }
+  | { kind: "local"; path: string; name: string };
 
 const FIRST_RUN_KEY = "popcorn.acceptedFirstRun";
 const THEME_KEY = "popcorn.theme";
@@ -37,7 +39,7 @@ function App() {
     () => localStorage.getItem(FIRST_RUN_KEY) === "1",
   );
   const [isDark, setIsDark] = useState(() => localStorage.getItem(THEME_KEY) !== "light");
-  const [view, setView] = useState<View>("library");
+  const [view, setView] = useState<View>("biblioteca");
   const [modalOpen, setModalOpen] = useState(false);
   const [playing, setPlaying] = useState<Playing | null>(null);
 
@@ -90,14 +92,17 @@ function App() {
         />
 
         <main className="flex-1 overflow-y-auto">
-          {view === "library" && (
-            <MediaLibrary items={mediaItems} onPlay={(item) => setPlaying({ kind: "media", item })} />
+          {view === "biblioteca" && (
+            <Biblioteca
+              mediaItems={mediaItems}
+              onPlayMedia={(item) => setPlaying({ kind: "media", item })}
+              onPlayChannel={(channel) => setPlaying({ kind: "channel", ...channel })}
+              onPlayLocal={(file) => setPlaying({ kind: "local", path: file.path, name: file.name })}
+              onMediaAdded={refreshMedia}
+            />
           )}
           {view === "torrents" && (
             <TorrentList torrents={torrents} onChanged={refreshTorrents} />
-          )}
-          {view === "channels" && (
-            <IptvView onPlayChannel={(channel) => setPlaying({ kind: "channel", ...channel })} />
           )}
         </main>
       </div>
@@ -110,6 +115,9 @@ function App() {
       )}
       {playing?.kind === "channel" && (
         <VideoPlayer kind="channel" title={playing.title} url={playing.url} onClose={() => setPlaying(null)} />
+      )}
+      {playing?.kind === "local" && (
+        <VideoPlayer kind="local" path={playing.path} name={playing.name} onClose={() => setPlaying(null)} />
       )}
     </div>
   );
