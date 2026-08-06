@@ -16,6 +16,8 @@ export function OnlineLibraryTab({ onAdded }: OnlineLibraryTabProps) {
   const [items, setItems] = useState<OnlineItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pdtLoading, setPdtLoading] = useState(true);
+  const [pdtError, setPdtError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -26,6 +28,17 @@ export function OnlineLibraryTab({ onAdded }: OnlineLibraryTabProps) {
       .then(setItems)
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
+
+    // Public Domain Torrents es mucho más lento que el resto (~8s vs ~1.5s,
+    // medido en vivo — ver plan, sección "investigar lentitud") — se pide
+    // por separado y se agrega apenas responde, sin bloquear el resto del
+    // catálogo detrás suyo.
+    setPdtLoading(true);
+    api
+      .browsePublicDomainTorrents()
+      .then((pdtItems) => setItems((prev) => [...prev, ...pdtItems]))
+      .catch((e) => setPdtError(String(e)))
+      .finally(() => setPdtLoading(false));
   }, []);
 
   async function add(item: OnlineItem) {
@@ -49,7 +62,7 @@ export function OnlineLibraryTab({ onAdded }: OnlineLibraryTabProps) {
   if (error) {
     return <p className="p-6 text-center text-xs text-red-500">{error}</p>;
   }
-  if (items.length === 0) {
+  if (items.length === 0 && !pdtLoading) {
     return (
       <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
         No hay resultados en el catálogo Online por ahora.
@@ -110,6 +123,16 @@ export function OnlineLibraryTab({ onAdded }: OnlineLibraryTabProps) {
           );
         })}
       </div>
+      {pdtLoading && (
+        <p className="p-3 text-center text-[11px] text-zinc-500 dark:text-zinc-400">
+          Cargando Public Domain Torrents… (tarda más que el resto del catálogo)
+        </p>
+      )}
+      {pdtError && (
+        <p className="p-3 text-center text-[11px] text-red-500">
+          Public Domain Torrents no respondió: {pdtError}
+        </p>
+      )}
     </div>
   );
 }

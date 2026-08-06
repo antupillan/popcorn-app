@@ -76,7 +76,13 @@ export const api = {
 
   listRecordings: () => invoke<RecordingInfo[]>("list_recordings"),
 
+  // Rápida (archive.org + Blender Foundation, ~1.5s medido en vivo) —
+  // separada de browsePublicDomainTorrents (ese sitio de terceros tarda
+  // ~8s) para que el frontend pueda renderizar cada grupo apenas responde
+  // en vez de esperar al más lento.
   browseOnlineLibrary: () => invoke<OnlineItem[]>("browse_online_library"),
+
+  browsePublicDomainTorrents: () => invoke<OnlineItem[]>("browse_public_domain_torrents"),
 
   addOnlineItem: (
     kind: string,
