@@ -243,6 +243,36 @@ pub async fn fetch_torrent_bytes(
     Ok(resp.bytes().await?.to_vec())
 }
 
+/// Resuelve la ruta relativa exacta (dentro de la carpeta de descargas del
+/// motor) que corresponde al archivo reproducible dentro de un `.torrent`
+/// — parseado directo del bencode real (`librqbit-core`), no asumido
+/// "single file torrent". Necesario para el sembrado real: `librqbit` solo
+/// verifica hash contra disco una vez, al agregar el torrent (sin API de
+/// recheck en 8.1.1, confirmado contra el código fuente) — si el archivo
+/// no está ya en este path exacto en ese momento, nunca lo va a reconocer
+/// como completo después.
+pub fn resolve_torrent_file_path(
+    torrent_bytes: &[u8],
+    playable_filename: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let meta = librqbit_core::torrent_metainfo::torrent_from_bytes::<buffers::ByteBufOwned>(torrent_bytes)
+        .context("no se pudo parsear el .torrent")?;
+    for file in meta
+        .info
+        .iter_file_details()
+        .context("estructura de archivos del .torrent inválida")?
+    {
+        let path = file
+            .filename
+            .to_pathbuf()
+            .context("nombre de archivo inválido dentro del .torrent")?;
+        if path.file_name().and_then(|f| f.to_str()) == Some(playable_filename) {
+            return Ok(path);
+        }
+    }
+    anyhow::bail!("el .torrent no tiene ningún archivo llamado {playable_filename}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +365,99 @@ mod tests {
         let client = reqwest::Client::new();
         let items = browse_feature_films(&client).await.unwrap();
         assert!(!items.is_empty());
+    }
+
+    // Construidos con los structs reales de librqbit-core + serializados con
+    // librqbit-bencode, en vez de escribir bencode a mano — evita errores de
+    // conteo de bytes en la longitud de cada string.
+    mod resolve_torrent_file_path_tests {
+        use super::*;
+        use buffers::ByteBufOwned;
+        use librqbit_core::torrent_metainfo::{TorrentMetaV1, TorrentMetaV1File, TorrentMetaV1Info};
+        use librqbit_core::Id20;
+
+        fn serialize(meta: &TorrentMetaV1<ByteBufOwned>) -> Vec<u8> {
+            let mut buf = Vec::new();
+            bencode::bencode_serialize_to_writer(meta, &mut buf).unwrap();
+            buf
+        }
+
+        fn base_meta(info: TorrentMetaV1Info<ByteBufOwned>) -> TorrentMetaV1<ByteBufOwned> {
+            TorrentMetaV1 {
+                announce: Some(ByteBufOwned::from(b"http://example.org/ann".as_slice())),
+                announce_list: vec![],
+                info,
+                comment: None,
+                created_by: None,
+                encoding: None,
+                publisher: None,
+                publisher_url: None,
+                creation_date: None,
+                info_hash: Id20::new([0u8; 20]),
+            }
+        }
+
+        #[test]
+        fn resolves_single_file_torrent_by_matching_name() {
+            let info = TorrentMetaV1Info::<ByteBufOwned> {
+                name: Some(ByteBufOwned::from(b"pelicula.mp4".as_slice())),
+                pieces: ByteBufOwned::from(vec![0u8; 20]),
+                piece_length: 16384,
+                length: Some(123),
+                files: None,
+                ..Default::default()
+            };
+            let bytes = serialize(&base_meta(info));
+
+            let path = resolve_torrent_file_path(&bytes, "pelicula.mp4").unwrap();
+            assert_eq!(path, std::path::PathBuf::from("pelicula.mp4"));
+        }
+
+        #[test]
+        fn resolves_multi_file_torrent_matching_only_the_playable_file() {
+            let info = TorrentMetaV1Info::<ByteBufOwned> {
+                name: Some(ByteBufOwned::from(b"mi_item".as_slice())),
+                pieces: ByteBufOwned::from(vec![0u8; 20]),
+                piece_length: 16384,
+                length: None,
+                files: Some(vec![
+                    TorrentMetaV1File {
+                        length: 999,
+                        path: vec![ByteBufOwned::from(b"subtitulos.srt".as_slice())],
+                        attr: None,
+                        sha1: None,
+                        symlink_path: None,
+                    },
+                    TorrentMetaV1File {
+                        length: 123,
+                        path: vec![ByteBufOwned::from(b"pelicula.mp4".as_slice())],
+                        attr: None,
+                        sha1: None,
+                        symlink_path: None,
+                    },
+                ]),
+                ..Default::default()
+            };
+            let bytes = serialize(&base_meta(info));
+
+            let path = resolve_torrent_file_path(&bytes, "pelicula.mp4").unwrap();
+            assert_eq!(path, std::path::PathBuf::from("pelicula.mp4"));
+        }
+
+        #[test]
+        fn errors_honestly_when_no_file_matches() {
+            let info = TorrentMetaV1Info::<ByteBufOwned> {
+                name: Some(ByteBufOwned::from(b"otro.mp4".as_slice())),
+                pieces: ByteBufOwned::from(vec![0u8; 20]),
+                piece_length: 16384,
+                length: Some(1),
+                files: None,
+                ..Default::default()
+            };
+            let bytes = serialize(&base_meta(info));
+
+            let err = resolve_torrent_file_path(&bytes, "pelicula.mp4").unwrap_err();
+            assert!(err.to_string().contains("pelicula.mp4"));
+        }
     }
 }
