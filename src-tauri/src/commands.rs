@@ -189,8 +189,11 @@ async fn heal_media_item(
             let bytes = archive_org::fetch_torrent_bytes(http, source_identifier)
                 .await
                 .map_err(|e| e.to_string())?;
+            // add_seeding_from_disk, no add() plano — mismo motivo que
+            // add_archive_org_item_core: si ya se sembró antes, add() sin
+            // overwrite falla contra los archivos ya completos en disco.
             let info = engine
-                .add(AddTorrentSource::TorrentBytes(bytes))
+                .add_seeding_from_disk(AddTorrentSource::TorrentBytes(bytes), None)
                 .await
                 .map_err(|e| e.to_string())?;
             // No fatal si esto falla — igual que en add_archive_org_item, el
@@ -312,8 +315,14 @@ pub(crate) async fn add_archive_org_item_core(
         .await
         .map_err(|e| e.to_string())?;
 
+    // add_seeding_from_disk (overwrite:true), no add() plano — error real
+    // encontrado en vivo: si este identifier ya se sembró antes (archivos
+    // completos en disco, ver seed_archive_org_item_core), un add() sin
+    // overwrite falla ("allow_overwrite = false") tanto en un segundo "Ver"
+    // como en la sanación de bug #26 tras reiniciar la app. Sin límite de
+    // subida acá — no es el flujo de sembrado dedicado.
     let info = engine
-        .add(AddTorrentSource::TorrentBytes(bytes))
+        .add_seeding_from_disk(AddTorrentSource::TorrentBytes(bytes), None)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -401,11 +410,17 @@ pub(crate) async fn seed_archive_org_item_core(
             tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
         }
 
-        let mut resp = crate::http_retry::send_with_retry(|| http.get(&download_url))
-            .await
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|e| e.to_string())?;
+        // Timeout por intento — sin esto una conexión colgada (confirmado en
+        // vivo: un intento de descarga se quedó sin avanzar ni fallar,
+        // indefinidamente) nunca dispara el próximo reintento de
+        // send_with_retry ni termina el sembrado en background.
+        let mut resp = crate::http_retry::send_with_retry(|| {
+            http.get(&download_url).timeout(std::time::Duration::from_secs(300))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
 
         use tokio::io::AsyncWriteExt;
         let mut out = tokio::fs::File::create(&target_path)
