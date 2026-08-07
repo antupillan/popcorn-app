@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 use tauri::State;
 
@@ -427,16 +428,31 @@ pub(crate) async fn seed_archive_org_item_core(
         .await
         .map_err(|e| e.to_string())?;
 
-    let media_id = uuid::Uuid::new_v4().to_string();
+    // Saltea el insert si ya existe una fila para este identifier — pasa
+    // cuando el sembrado se dispara automático después de "Ver"
+    // (add_archive_org_item_core ya insertó la suya, ver
+    // online_library::add_online_item_inner).
     {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT INTO media_items \
-             (id, source_type, source_identifier, title, year, license, engine_torrent_id) \
-             VALUES (?1, 'archive_org', ?2, ?3, ?4, ?5, ?6)",
-            (&media_id, identifier, title, year, licenseurl, &info.id),
-        )
-        .map_err(|e| e.to_string())?;
+        let already_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM media_items WHERE source_identifier = ?1",
+                [identifier],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(false);
+        if !already_exists {
+            let media_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO media_items \
+                 (id, source_type, source_identifier, title, year, license, engine_torrent_id) \
+                 VALUES (?1, 'archive_org', ?2, ?3, ?4, ?5, ?6)",
+                (&media_id, identifier, title, year, licenseurl, &info.id),
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
 
     Ok(info)

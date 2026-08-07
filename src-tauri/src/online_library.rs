@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::ai::{commands::try_build_active_provider, curation};
-use crate::commands::{add_archive_org_item_core, EngineState, HttpClient};
+use crate::commands::{add_archive_org_item_core, seed_archive_org_item_core, EngineState, HttpClient};
 use crate::db::Db;
 use crate::engine::{AddTorrentSource, TorrentEngine, TorrentInfo};
 use crate::sources::{archive_org, public_domain_torrents};
@@ -271,6 +271,7 @@ async fn add_online_item_inner(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn add_online_item(
+    app: tauri::AppHandle,
     http: State<'_, HttpClient>,
     engine: State<'_, EngineState>,
     db: State<'_, Db>,
@@ -280,7 +281,48 @@ pub async fn add_online_item(
     year: Option<i64>,
     license: Option<String>,
 ) -> Result<TorrentInfo, String> {
-    add_online_item_inner(&http.0, &engine.0, &db, &kind, &identifier, &title, year, license).await
+    let info = add_online_item_inner(
+        &http.0,
+        &engine.0,
+        &db,
+        &kind,
+        &identifier,
+        &title,
+        year,
+        license.clone(),
+    )
+    .await?;
+
+    // Sembrado automático en background tras "Ver", solo familia
+    // archive.org (Public Domain Torrents ya es P2P real desde que se
+    // agrega) — no bloquea la respuesta ni la reproducción, que ya está
+    // resuelta vía proxy. seed_archive_org_item_core saltea el insert en
+    // media_items si la fila ya existe (la que acabamos de crear arriba).
+    if matches!(kind.as_str(), "archive_org" | "blender_foundation" | "prelinger" | "feature_films") {
+        let task_app = app.clone();
+        let task_identifier = identifier.clone();
+        let task_title = title.clone();
+        tokio::spawn(async move {
+            let http = task_app.state::<HttpClient>();
+            let engine = task_app.state::<EngineState>();
+            let db = task_app.state::<Db>();
+            if let Err(e) = seed_archive_org_item_core(
+                &http.0,
+                &engine.0,
+                &db,
+                &task_identifier,
+                &task_title,
+                year,
+                license,
+            )
+            .await
+            {
+                eprintln!("[popcorn] sembrado automático falló para {task_identifier}: {e}");
+            }
+        });
+    }
+
+    Ok(info)
 }
 
 #[cfg(test)]
