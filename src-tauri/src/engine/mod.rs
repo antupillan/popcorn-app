@@ -73,4 +73,14 @@ pub trait TorrentEngine: Send + Sync {
     async fn local_stream_url(&self, _path: std::path::PathBuf) -> anyhow::Result<String> {
         anyhow::bail!("el motor activo no soporta biblioteca local (requiere EmbeddedRqbit)")
     }
+
+    /// Carpeta de descargas real del motor — necesaria para colocar bytes
+    /// en el lugar exacto que espera un `.torrent` antes de agregarlo (ver
+    /// sembrado real de archive.org, `commands::seed_archive_org_item_core`).
+    /// `None` por defecto; `EmbeddedRqbit` la expone porque ya la recibe en
+    /// `new()`. Misma nota honesta de acoplamiento que `local_stream_url`:
+    /// un futuro `ExternalQbittorrent`/`ExternalTransmission` no la tendría.
+    fn downloads_dir(&self) -> Option<&std::path::Path> {
+        None
+    }
 }

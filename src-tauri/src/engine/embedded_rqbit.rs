@@ -24,11 +24,12 @@ pub struct EmbeddedRqbit {
     stream_port: u16,
     http_fallback: HttpFallbackMap,
     local_files: LocalFileMap,
+    downloads_dir: std::path::PathBuf,
 }
 
 impl EmbeddedRqbit {
     pub async fn new(download_dir: std::path::PathBuf) -> anyhow::Result<Self> {
-        let session = Session::new(download_dir)
+        let session = Session::new(download_dir.clone())
             .await
             .context("no se pudo iniciar la sesión de librqbit")?;
         let http_fallback: HttpFallbackMap = Arc::new(Mutex::new(HashMap::new()));
@@ -41,6 +42,7 @@ impl EmbeddedRqbit {
             stream_port,
             http_fallback,
             local_files,
+            downloads_dir: download_dir,
         })
     }
 }
@@ -118,6 +120,10 @@ impl TorrentEngine for EmbeddedRqbit {
         let token = uuid::Uuid::new_v4().to_string();
         self.local_files.lock().unwrap().insert(token.clone(), path);
         Ok(format!("http://127.0.0.1:{}/local/{token}", self.stream_port))
+    }
+
+    fn downloads_dir(&self) -> Option<&std::path::Path> {
+        Some(&self.downloads_dir)
     }
 }
 
