@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
-import type { OnlineItem } from "../types";
+import type { MediaItem, OnlineItem } from "../types";
 
 const KIND_LABEL: Record<OnlineItem["kind"], string> = {
   archive_org: "archive.org",
@@ -11,10 +11,13 @@ const KIND_LABEL: Record<OnlineItem["kind"], string> = {
 };
 
 interface OnlineLibraryTabProps {
+  mediaItems: MediaItem[];
+  onPlayMedia: (item: MediaItem) => void;
+  onPlayOnline: (title: string, url: string) => void;
   onAdded: () => void;
 }
 
-export function OnlineLibraryTab({ onAdded }: OnlineLibraryTabProps) {
+export function OnlineLibraryTab({ mediaItems, onPlayMedia, onPlayOnline, onAdded }: OnlineLibraryTabProps) {
   const [items, setItems] = useState<OnlineItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -22,6 +25,7 @@ export function OnlineLibraryTab({ onAdded }: OnlineLibraryTabProps) {
   const [pdtError, setPdtError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     setLoading(true);
@@ -43,16 +47,30 @@ export function OnlineLibraryTab({ onAdded }: OnlineLibraryTabProps) {
       .finally(() => setPdtLoading(false));
   }, []);
 
-  async function add(item: OnlineItem) {
+  // undefined si el ítem todavía no está en la colección del usuario —
+  // source_identifier guarda el identifier de OnlineItem tal cual, sin
+  // transformar, para las cinco fuentes (ver add_archive_org_item_core/
+  // add_online_item_inner en el backend).
+  function findExisting(item: OnlineItem): MediaItem | undefined {
+    return mediaItems.find((m) => m.source_identifier === item.identifier);
+  }
+
+  async function view(item: OnlineItem) {
+    const existing = findExisting(item);
+    if (existing) {
+      onPlayMedia(existing);
+      return;
+    }
     const key = `${item.kind}:${item.identifier}`;
     setBusyKey(key);
     setMessage(null);
     try {
-      await api.addOnlineItem(item.kind, item.identifier, item.title, item.year, item.license);
-      setMessage(`Agregado: ${item.title} (ver pestaña Mi Colección).`);
+      const info = await api.addOnlineItem(item.kind, item.identifier, item.title, item.year, item.license);
+      const url = await api.getStreamUrl(info.id, 0);
+      onPlayOnline(item.title, url);
       onAdded();
     } catch (e) {
-      setMessage(`No se pudo agregar "${item.title}": ${e}`);
+      setMessage(`No se pudo reproducir "${item.title}": ${e}`);
     } finally {
       setBusyKey(null);
     }
@@ -72,17 +90,37 @@ export function OnlineLibraryTab({ onAdded }: OnlineLibraryTabProps) {
     );
   }
 
+  const filtered = items.filter((i) => i.title.toLowerCase().includes(query.toLowerCase()));
+
   return (
     <div className="flex flex-col gap-2 p-4">
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Buscar por nombre…"
+        className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-sky-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+      />
       {message && <p className="text-xs text-sky-600 dark:text-sky-400">{message}</p>}
+      {filtered.length === 0 && (
+        <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
+          Sin resultados para "{query}".
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-        {items.map((item) => {
+        {filtered.map((item) => {
           const key = `${item.kind}:${item.identifier}`;
+          const existing = findExisting(item);
           return (
             <div
               key={key}
-              className="flex flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+              className="relative flex flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
             >
+              {existing && (
+                <span className="absolute left-1.5 top-1.5 z-10 rounded-full bg-emerald-600/90 px-1.5 py-0.5 text-[9px] font-semibold text-white">
+                  En tu colección
+                </span>
+              )}
               <div className="flex aspect-video items-center justify-center bg-zinc-100 dark:bg-zinc-800">
                 {item.thumbnail_url ? (
                   <img
@@ -114,11 +152,11 @@ export function OnlineLibraryTab({ onAdded }: OnlineLibraryTabProps) {
                   {item.year && <span className="text-[10px] text-zinc-500">{item.year}</span>}
                 </div>
                 <button
-                  onClick={() => add(item)}
+                  onClick={() => view(item)}
                   disabled={busyKey === key}
                   className="mt-1 rounded-md border border-sky-600 px-2 py-1 text-[11px] font-semibold text-sky-600 hover:bg-sky-600 hover:text-white disabled:opacity-50 dark:text-sky-400"
                 >
-                  {busyKey === key ? "Agregando…" : "Agregar"}
+                  {busyKey === key ? "Cargando…" : "Ver"}
                 </button>
               </div>
             </div>

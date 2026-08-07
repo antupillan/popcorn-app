@@ -6,7 +6,8 @@ import type { MediaItem } from "../types";
 type VideoPlayerProps =
   | { kind: "media"; item: MediaItem; onClose: () => void }
   | { kind: "channel"; title: string; url: string; onClose: () => void }
-  | { kind: "local"; path: string; name: string; onClose: () => void };
+  | { kind: "local"; path: string; name: string; onClose: () => void }
+  | { kind: "online"; title: string; url: string; onClose: () => void };
 
 export function VideoPlayer(props: VideoPlayerProps) {
   const { onClose, kind } = props;
@@ -14,6 +15,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const mediaItemId = props.kind === "media" ? props.item.id : null;
   const channelUrl = props.kind === "channel" ? props.url : null;
   const localPath = props.kind === "local" ? props.path : null;
+  const onlineUrl = props.kind === "online" ? props.url : null;
 
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -37,8 +39,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
       setUrl(channelUrl);
     } else if (kind === "local" && localPath) {
       api.getLocalStreamUrl(localPath).then(setUrl).catch((e) => setError(String(e)));
+    } else if (kind === "online" && onlineUrl) {
+      // Ya viene resuelta por el caller (OnlineLibraryTab: addOnlineItem +
+      // getStreamUrl) — sin fetch adicional acá, mismo criterio que "channel".
+      setUrl(onlineUrl);
     }
-  }, [kind, mediaItemId, channelUrl, localPath]);
+  }, [kind, mediaItemId, channelUrl, localPath, onlineUrl]);
 
   useEffect(() => {
     if (kind !== "channel" || !url) return;

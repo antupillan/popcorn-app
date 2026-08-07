@@ -13,7 +13,8 @@ import type { MediaItem, TorrentInfo } from "./types";
 type Playing =
   | { kind: "media"; item: MediaItem }
   | { kind: "channel"; title: string; url: string }
-  | { kind: "local"; path: string; name: string };
+  | { kind: "local"; path: string; name: string }
+  | { kind: "online"; title: string; url: string };
 
 const FIRST_RUN_KEY = "popcorn.acceptedFirstRun";
 const THEME_KEY = "popcorn.theme";
@@ -98,6 +99,7 @@ function App() {
               onPlayMedia={(item) => setPlaying({ kind: "media", item })}
               onPlayChannel={(channel) => setPlaying({ kind: "channel", ...channel })}
               onPlayLocal={(file) => setPlaying({ kind: "local", path: file.path, name: file.name })}
+              onPlayOnline={(title, url) => setPlaying({ kind: "online", title, url })}
               onMediaAdded={refreshMedia}
             />
           )}
@@ -118,6 +120,9 @@ function App() {
       )}
       {playing?.kind === "local" && (
         <VideoPlayer kind="local" path={playing.path} name={playing.name} onClose={() => setPlaying(null)} />
+      )}
+      {playing?.kind === "online" && (
+        <VideoPlayer kind="online" title={playing.title} url={playing.url} onClose={() => setPlaying(null)} />
       )}
     </div>
   );
