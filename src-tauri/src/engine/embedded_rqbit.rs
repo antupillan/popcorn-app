@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use async_trait::async_trait;
 use librqbit::api::TorrentIdOrHash;
-use librqbit::{AddTorrent, Session, TorrentStatsState};
+use librqbit::{AddTorrent, AddTorrentOptions, Session, TorrentStatsState};
 
 use super::{AddTorrentSource, TorrentEngine, TorrentInfo};
 
@@ -56,18 +56,45 @@ fn state_label(state: &TorrentStatsState) -> &'static str {
     }
 }
 
-#[async_trait]
-impl TorrentEngine for EmbeddedRqbit {
-    async fn add(&self, source: AddTorrentSource) -> anyhow::Result<TorrentInfo> {
+impl EmbeddedRqbit {
+    async fn add_internal(
+        &self,
+        source: AddTorrentSource,
+        opts: Option<AddTorrentOptions>,
+    ) -> anyhow::Result<TorrentInfo> {
         let add = match source {
             AddTorrentSource::Magnet(uri) => AddTorrent::from_url(uri),
             AddTorrentSource::TorrentBytes(bytes) => AddTorrent::from_bytes(bytes),
         };
-        let response = self.session.add_torrent(add, None).await?;
+        let response = self.session.add_torrent(add, opts).await?;
         let handle = response
             .into_handle()
             .context("el torrent quedó en modo solo-listado (list_only), no se agregó a descarga")?;
         Ok(to_info(&handle))
+    }
+}
+
+#[async_trait]
+impl TorrentEngine for EmbeddedRqbit {
+    async fn add(&self, source: AddTorrentSource) -> anyhow::Result<TorrentInfo> {
+        self.add_internal(source, None).await
+    }
+
+    /// Sembrado real (ver commands::seed_archive_org_item_core): el archivo
+    /// ya se colocó a mano en el path exacto antes de esta llamada —
+    /// `overwrite: true` es necesario porque por default librqbit rechaza
+    /// crear un archivo si ya existe algo ahí (protección de seguridad
+    /// contra pisar datos ajenos sin querer), confirmado en vivo contra
+    /// cosmos-laundromat (error real: "allow_overwrite = false").
+    async fn add_seeding_from_disk(&self, source: AddTorrentSource) -> anyhow::Result<TorrentInfo> {
+        self.add_internal(
+            source,
+            Some(AddTorrentOptions {
+                overwrite: true,
+                ..Default::default()
+            }),
+        )
+        .await
     }
 
     async fn list(&self) -> anyhow::Result<Vec<TorrentInfo>> {

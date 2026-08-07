@@ -33,6 +33,17 @@ pub struct TorrentInfo {
 #[async_trait]
 pub trait TorrentEngine: Send + Sync {
     async fn add(&self, source: AddTorrentSource) -> anyhow::Result<TorrentInfo>;
+
+    /// Como `add`, pero para cuando el archivo completo ya se colocó a mano
+    /// en el destino antes de llamar (sembrado real, ver
+    /// `commands::seed_archive_org_item_core`) — necesita permiso explícito
+    /// para reusar/sobreescribir lo que ya esté ahí en vez de rechazarlo por
+    /// seguridad. Delega a `add` por defecto (comportamiento idéntico) para
+    /// motores que no distinguen el caso; solo `EmbeddedRqbit` lo necesita
+    /// de verdad.
+    async fn add_seeding_from_disk(&self, source: AddTorrentSource) -> anyhow::Result<TorrentInfo> {
+        self.add(source).await
+    }
     async fn list(&self) -> anyhow::Result<Vec<TorrentInfo>>;
     async fn pause(&self, id: &str) -> anyhow::Result<()>;
     async fn remove(&self, id: &str, delete_files: bool) -> anyhow::Result<()>;

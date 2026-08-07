@@ -351,6 +351,103 @@ pub async fn add_archive_org_item(
     add_archive_org_item_core(&http.0, &engine.0, &db, &identifier, &title, year, licenseurl).await
 }
 
+/// Sembrado real (ver plan): descarga por HTTP **todos** los archivos
+/// reales del `.torrent` (no solo el reproducible — hallazgo real contra
+/// cosmos-laundromat: los archivos de metadata chicos también cuentan
+/// para el 100%, ver `archive_org::resolve_torrent_files`) a la ruta
+/// exacta que cada uno espera, y recién entonces agrega el torrent al
+/// motor — librqbit verifica el hash contra esos archivos ya en disco y
+/// los marca 100% tenidos de entrada, sembrando de verdad al swarm real en
+/// vez de solo servir por el proxy HTTP (`add_archive_org_item_core`).
+/// Solo tiene sentido para la familia archive.org (archive_org/
+/// blender_foundation/prelinger/feature_films) — Public Domain Torrents ya
+/// es P2P real desde que se agrega.
+pub(crate) async fn seed_archive_org_item_core(
+    http: &reqwest::Client,
+    engine: &Arc<dyn TorrentEngine>,
+    db: &Db,
+    identifier: &str,
+    title: &str,
+    year: Option<i64>,
+    licenseurl: Option<String>,
+) -> Result<TorrentInfo, String> {
+    let downloads_dir = engine
+        .downloads_dir()
+        .ok_or_else(|| "el motor activo no soporta sembrado real (requiere EmbeddedRqbit)".to_string())?
+        .to_path_buf();
+
+    let torrent_bytes = archive_org::fetch_torrent_bytes(http, identifier)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let files = archive_org::resolve_torrent_files(&torrent_bytes).map_err(|e| e.to_string())?;
+
+    // Streaming a disco en vez de cargar cada respuesta entera en memoria —
+    // son películas, no los KB de un .torrent. Secuencial, no en paralelo:
+    // el archivo grande domina el tiempo total de todos modos, y evita
+    // saturar de golpe la conexión del usuario con varias descargas a la vez.
+    for file in &files {
+        let download_url = format!(
+            "https://archive.org/download/{identifier}/{}",
+            urlencoding::encode(&file.archive_org_filename)
+        );
+        let target_path = downloads_dir.join(&file.local_path);
+        if let Some(parent) = target_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+        }
+
+        let mut resp = crate::http_retry::send_with_retry(|| http.get(&download_url))
+            .await
+            .map_err(|e| e.to_string())?
+            .error_for_status()
+            .map_err(|e| e.to_string())?;
+
+        use tokio::io::AsyncWriteExt;
+        let mut out = tokio::fs::File::create(&target_path)
+            .await
+            .map_err(|e| e.to_string())?;
+        while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+            out.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Todos los archivos ya están completos en el lugar exacto —
+    // add_seeding_from_disk corre el chequeo de hash de librqbit contra
+    // ellos (con overwrite:true, necesario porque ya existen) y reconoce
+    // el torrent 100% tenido de entrada, sin bajar nada por P2P.
+    let info = engine
+        .add_seeding_from_disk(AddTorrentSource::TorrentBytes(torrent_bytes))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let media_id = uuid::Uuid::new_v4().to_string();
+    {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO media_items \
+             (id, source_type, source_identifier, title, year, license, engine_torrent_id) \
+             VALUES (?1, 'archive_org', ?2, ?3, ?4, ?5, ?6)",
+            (&media_id, identifier, title, year, licenseurl, &info.id),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn seed_archive_org_item(
+    http: State<'_, HttpClient>,
+    engine: State<'_, EngineState>,
+    db: State<'_, Db>,
+    identifier: String,
+    title: String,
+    year: Option<i64>,
+    licenseurl: Option<String>,
+) -> Result<TorrentInfo, String> {
+    seed_archive_org_item_core(&http.0, &engine.0, &db, &identifier, &title, year, licenseurl).await
+}
+
 #[cfg(test)]
 mod healing_tests {
     use super::*;
@@ -524,5 +621,112 @@ mod healing_tests {
         assert!(resolve_media_item_stream_url(&http, &engine, &db, "no-existe", 0)
             .await
             .is_err());
+    }
+}
+
+#[cfg(test)]
+mod seed_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use rusqlite::Connection;
+
+    fn migrated_db() -> Db {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        Db(std::sync::Mutex::new(conn))
+    }
+
+    /// downloads_dir() con default None (no lo sobreescribe) — cualquier
+    /// motor que no sea EmbeddedRqbit cae acá.
+    struct EngineWithoutDownloadsDir;
+    #[async_trait]
+    impl TorrentEngine for EngineWithoutDownloadsDir {
+        async fn add(&self, _source: AddTorrentSource) -> anyhow::Result<TorrentInfo> {
+            unimplemented!("no debería llegar a agregar nada si downloads_dir() no está soportado")
+        }
+        async fn list(&self) -> anyhow::Result<Vec<TorrentInfo>> {
+            unimplemented!()
+        }
+        async fn pause(&self, _id: &str) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        async fn remove(&self, _id: &str, _delete_files: bool) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        async fn stream_url(&self, _id: &str, _file_idx: usize) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn errors_honestly_when_engine_does_not_support_downloads_dir() {
+        let db = migrated_db();
+        let engine: Arc<dyn TorrentEngine> = Arc::new(EngineWithoutDownloadsDir);
+        let http = reqwest::Client::new();
+
+        let err = seed_archive_org_item_core(&http, &engine, &db, "x", "X", None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("sembrado real"),
+            "debe explicar la limitación, no fallar en silencio: {err}"
+        );
+    }
+
+    /// Red real, deshabilitado por defecto: descarga completa el ítem más
+    /// chico de Blender Foundation (~45.5MB, cosmos-laundromat) y confirma
+    /// que, tras engine.add(), el TorrentInfo ya reporta 100% completo —
+    /// prueba real de que librqbit lo reconoció sembrado desde el disco,
+    /// sin bajar nada por P2P. Corre con `cargo test -- --ignored`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "red real, descarga ~45MB, no apto para CI por defecto"]
+    async fn seed_archive_org_item_core_recognizes_a_fully_downloaded_file_as_complete() {
+        let db = migrated_db();
+        let tmp = std::env::temp_dir().join(format!("popcorn-seed-e2e-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let embedded = crate::engine::embedded_rqbit::EmbeddedRqbit::new(tmp).await.unwrap();
+        let engine: Arc<dyn TorrentEngine> = Arc::new(embedded);
+        let http = reqwest::Client::new();
+
+        let info = seed_archive_org_item_core(
+            &http,
+            &engine,
+            &db,
+            "cosmos-laundromat",
+            "Cosmos Laundromat",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(info.total_bytes > 0, "debe conocer el tamaño total real");
+
+        // librqbit corre el chequeo de hash en background (spawn_with_cancel,
+        // confirmado leyendo torrent_state/mod.rs::_start) — no está listo
+        // todavía en el instante en que add() retorna, hay que esperar a que
+        // el estado deje "initializing". Timeout generoso (45MB debería
+        // verificarse en segundos, no minutos) para no colgar el test si de
+        // verdad no se reconoce.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut last_state = info.state.clone();
+        let mut final_info = info;
+        while std::time::Instant::now() < deadline {
+            let list = engine.list().await.unwrap();
+            let Some(current) = list.into_iter().find(|t| t.id == final_info.id) else {
+                panic!("el torrent desapareció de la lista mientras se esperaba el chequeo");
+            };
+            last_state = current.state.clone();
+            final_info = current;
+            if last_state != "initializing" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+
+        assert_eq!(
+            final_info.progress_bytes, final_info.total_bytes,
+            "el archivo ya estaba completo en disco antes de agregar — debe reconocerse 100% sembrado \
+             una vez terminado el chequeo (estado final: {last_state})"
+        );
     }
 }

@@ -46,6 +46,7 @@ pub fn run() {
             commands::get_stream_url_for_media_item,
             commands::search_archive_org,
             commands::add_archive_org_item,
+            commands::seed_archive_org_item,
             commands::list_media_items,
             commands::add_torrent_file,
             indexers::list_indexers,
