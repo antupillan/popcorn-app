@@ -92,6 +92,17 @@ export const api = {
     license: string | null,
   ) => invoke<TorrentInfo>("add_online_item", { kind, identifier, title, year, license }),
 
+  // Sembrado real (solo familia archive.org: archive_org/blender_foundation/
+  // prelinger/feature_films) — descarga el .torrent completo antes de
+  // agregarlo, a diferencia de addOnlineItem/"Ver" que reproduce vía proxy
+  // sin esperar. Puede tardar bastante más que "Ver" en ítems grandes.
+  seedArchiveOrgItem: (
+    identifier: string,
+    title: string,
+    year: number | null,
+    licenseurl: string | null,
+  ) => invoke<TorrentInfo>("seed_archive_org_item", { identifier, title, year, licenseurl }),
+
   getLocalLibraryFolder: () => invoke<string | null>("get_local_library_folder"),
 
   setLocalLibraryFolder: (folder: string) => invoke<void>("set_local_library_folder", { folder }),

@@ -76,6 +76,25 @@ export function OnlineLibraryTab({ mediaItems, onPlayMedia, onPlayOnline, onAdde
     }
   }
 
+  // Solo tiene sentido para la familia archive.org (Public Domain Torrents
+  // ya es P2P real desde que se agrega, sin proxy de por medio) — descarga
+  // el .torrent completo antes de agregarlo, puede tardar bastante más que
+  // "Ver".
+  async function seed(item: OnlineItem) {
+    const key = `${item.kind}:${item.identifier}:seed`;
+    setBusyKey(key);
+    setMessage(null);
+    try {
+      await api.seedArchiveOrgItem(item.identifier, item.title, item.year, item.license);
+      setMessage(`Sembrando de verdad: ${item.title} (ver pestaña Torrents para pausar/quitar).`);
+      onAdded();
+    } catch (e) {
+      setMessage(`No se pudo sembrar "${item.title}": ${e}`);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
   if (loading) {
     return <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">Cargando catálogo…</p>;
   }
@@ -151,13 +170,25 @@ export function OnlineLibraryTab({ mediaItems, onPlayMedia, onPlayOnline, onAdde
                   </span>
                   {item.year && <span className="text-[10px] text-zinc-500">{item.year}</span>}
                 </div>
-                <button
-                  onClick={() => view(item)}
-                  disabled={busyKey === key}
-                  className="mt-1 rounded-md border border-sky-600 px-2 py-1 text-[11px] font-semibold text-sky-600 hover:bg-sky-600 hover:text-white disabled:opacity-50 dark:text-sky-400"
-                >
-                  {busyKey === key ? "Cargando…" : "Ver"}
-                </button>
+                <div className="mt-1 flex gap-1">
+                  <button
+                    onClick={() => view(item)}
+                    disabled={busyKey === key || busyKey === `${key}:seed`}
+                    className="flex-1 rounded-md border border-sky-600 px-2 py-1 text-[11px] font-semibold text-sky-600 hover:bg-sky-600 hover:text-white disabled:opacity-50 dark:text-sky-400"
+                  >
+                    {busyKey === key ? "Cargando…" : "Ver"}
+                  </button>
+                  {item.kind !== "public_domain_torrents" && (
+                    <button
+                      onClick={() => seed(item)}
+                      disabled={busyKey === key || busyKey === `${key}:seed`}
+                      title="Descarga completo y siembra de verdad al swarm real (tarda más que Ver)"
+                      className="flex-1 rounded-md border border-emerald-600 px-2 py-1 text-[11px] font-semibold text-emerald-600 hover:bg-emerald-600 hover:text-white disabled:opacity-50 dark:text-emerald-400"
+                    >
+                      {busyKey === `${key}:seed` ? "Sembrando…" : "Sembrar"}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           );
