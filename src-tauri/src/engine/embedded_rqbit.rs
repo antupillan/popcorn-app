@@ -86,11 +86,21 @@ impl TorrentEngine for EmbeddedRqbit {
     /// crear un archivo si ya existe algo ahí (protección de seguridad
     /// contra pisar datos ajenos sin querer), confirmado en vivo contra
     /// cosmos-laundromat (error real: "allow_overwrite = false").
-    async fn add_seeding_from_disk(&self, source: AddTorrentSource) -> anyhow::Result<TorrentInfo> {
+    /// `upload_bps` (bytes/seg, no bits) acota la velocidad de subida vía
+    /// `librqbit::limits::LimitsConfig` — `None` deja sin límite.
+    async fn add_seeding_from_disk(
+        &self,
+        source: AddTorrentSource,
+        upload_bps: Option<u32>,
+    ) -> anyhow::Result<TorrentInfo> {
         self.add_internal(
             source,
             Some(AddTorrentOptions {
                 overwrite: true,
+                ratelimits: librqbit::limits::LimitsConfig {
+                    upload_bps: upload_bps.and_then(std::num::NonZeroU32::new),
+                    download_bps: None,
+                },
                 ..Default::default()
             }),
         )
@@ -417,6 +427,7 @@ fn to_info(handle: &Arc<librqbit::ManagedTorrent>) -> TorrentInfo {
         total_bytes: stats.total_bytes,
         download_speed_mbps,
         upload_speed_mbps,
+        uploaded_bytes: stats.uploaded_bytes,
         finished: stats.finished,
         state: state_label(&stats.state).to_string(),
         error: stats.error,

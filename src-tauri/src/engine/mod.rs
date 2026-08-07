@@ -21,6 +21,11 @@ pub struct TorrentInfo {
     pub total_bytes: u64,
     pub download_speed_mbps: f64,
     pub upload_speed_mbps: f64,
+    /// Bytes subidos acumulados desde que se agregó el torrent — usado para
+    /// detectar relación 1:1 en el sembrado automático (ver
+    /// online_library::add_online_item_inner). 0 si el motor no expone
+    /// stats en vivo (torrent recién agregado, todavía inicializando).
+    pub uploaded_bytes: u64,
     pub finished: bool,
     pub state: String,
     pub error: Option<String>,
@@ -38,10 +43,17 @@ pub trait TorrentEngine: Send + Sync {
     /// en el destino antes de llamar (sembrado real, ver
     /// `commands::seed_archive_org_item_core`) — necesita permiso explícito
     /// para reusar/sobreescribir lo que ya esté ahí en vez de rechazarlo por
-    /// seguridad. Delega a `add` por defecto (comportamiento idéntico) para
-    /// motores que no distinguen el caso; solo `EmbeddedRqbit` lo necesita
-    /// de verdad.
-    async fn add_seeding_from_disk(&self, source: AddTorrentSource) -> anyhow::Result<TorrentInfo> {
+    /// seguridad. `upload_bps` acota la velocidad de subida (`None` = sin
+    /// límite) — valor operacional que decide el caller, nunca hardcodeado
+    /// acá (Mandato 5). Delega a `add` por defecto (comportamiento idéntico,
+    /// ignora el límite) para motores que no distinguen el caso; solo
+    /// `EmbeddedRqbit` lo necesita de verdad.
+    async fn add_seeding_from_disk(
+        &self,
+        source: AddTorrentSource,
+        upload_bps: Option<u32>,
+    ) -> anyhow::Result<TorrentInfo> {
+        let _ = upload_bps;
         self.add(source).await
     }
     async fn list(&self) -> anyhow::Result<Vec<TorrentInfo>>;

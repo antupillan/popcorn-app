@@ -12,6 +12,10 @@ use crate::sources::public_domain_torrents;
 pub struct EngineState(pub Arc<dyn TorrentEngine>);
 pub struct HttpClient(pub reqwest::Client);
 
+/// Tope de subida del sembrado automático: 1 Mbps en bytes/seg (librqbit
+/// opera en bytes, no bits). Fijo hasta que Etapa 2 lo vuelva ajustable.
+pub(crate) const DEFAULT_SEED_UPLOAD_BPS: u32 = 1_000_000 / 8;
+
 #[derive(Serialize)]
 pub struct MediaItem {
     pub id: String,
@@ -416,7 +420,10 @@ pub(crate) async fn seed_archive_org_item_core(
     // ellos (con overwrite:true, necesario porque ya existen) y reconoce
     // el torrent 100% tenido de entrada, sin bajar nada por P2P.
     let info = engine
-        .add_seeding_from_disk(AddTorrentSource::TorrentBytes(torrent_bytes))
+        .add_seeding_from_disk(
+            AddTorrentSource::TorrentBytes(torrent_bytes),
+            Some(DEFAULT_SEED_UPLOAD_BPS),
+        )
         .await
         .map_err(|e| e.to_string())?;
 
@@ -491,6 +498,7 @@ mod healing_tests {
                 total_bytes: 0,
                 download_speed_mbps: 0.0,
                 upload_speed_mbps: 0.0,
+                uploaded_bytes: 0,
                 finished: false,
                 state: "initializing".to_string(),
                 error: None,
