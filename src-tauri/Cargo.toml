@@ -26,6 +26,10 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 librqbit = "8.1.1"
+# Ya resuelta como dependencia transitiva de librqbit (ver Cargo.lock) —
+# se suma directa solo para parsear metadata de .torrent (torrent_metainfo)
+# al preparar sembrado real de archive.org, cero riesgo nuevo de árbol.
+librqbit-core = "5.0.0"
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
