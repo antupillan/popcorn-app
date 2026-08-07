@@ -9,6 +9,7 @@ export interface TorrentInfo {
   total_bytes: number;
   download_speed_mbps: number;
   upload_speed_mbps: number;
+  uploaded_bytes: number;
   finished: boolean;
   state: "initializing" | "live" | "paused" | "error";
   error: string | null;

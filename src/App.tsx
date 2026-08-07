@@ -7,6 +7,7 @@ import { TorrentList } from "./components/TorrentList";
 import { Biblioteca } from "./components/Biblioteca";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { FirstRunScreen } from "./components/FirstRunScreen";
+import { SeedRatioDialog } from "./components/SeedRatioDialog";
 import { api } from "./lib/api";
 import type { MediaItem, TorrentInfo } from "./types";
 
@@ -43,6 +44,7 @@ function App() {
   const [view, setView] = useState<View>("biblioteca");
   const [modalOpen, setModalOpen] = useState(false);
   const [playing, setPlaying] = useState<Playing | null>(null);
+  const [seedRatioTorrent, setSeedRatioTorrent] = useState<TorrentInfo | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
@@ -63,6 +65,29 @@ function App() {
   function handleAdded() {
     refreshTorrents();
     refreshMedia();
+  }
+
+  // Aviso único al llegar a 1:1 en un torrent sembrado automáticamente (ver
+  // plan de sembrado automático) — un diálogo a la vez, marca en
+  // localStorage para no repetir por ese id.
+  useEffect(() => {
+    if (seedRatioTorrent) return;
+    const candidate = torrents.find(
+      (t) =>
+        t.total_bytes > 0 &&
+        t.uploaded_bytes >= t.total_bytes &&
+        localStorage.getItem(`popcorn.seedNotified.${t.id}`) !== "1",
+    );
+    if (candidate) setSeedRatioTorrent(candidate);
+  }, [torrents, seedRatioTorrent]);
+
+  function dismissSeedRatio(keep: boolean) {
+    if (!seedRatioTorrent) return;
+    localStorage.setItem(`popcorn.seedNotified.${seedRatioTorrent.id}`, "1");
+    if (!keep) {
+      api.removeTorrent(seedRatioTorrent.id, false).then(refreshTorrents);
+    }
+    setSeedRatioTorrent(null);
   }
 
   if (!acceptedFirstRun) {
@@ -123,6 +148,13 @@ function App() {
       )}
       {playing?.kind === "online" && (
         <VideoPlayer kind="online" title={playing.title} url={playing.url} onClose={() => setPlaying(null)} />
+      )}
+      {seedRatioTorrent && (
+        <SeedRatioDialog
+          torrentName={seedRatioTorrent.name ?? seedRatioTorrent.info_hash}
+          onKeep={() => dismissSeedRatio(true)}
+          onRemove={() => dismissSeedRatio(false)}
+        />
       )}
     </div>
   );
