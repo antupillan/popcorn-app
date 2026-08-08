@@ -12,6 +12,7 @@ use librqbit::api::TorrentIdOrHash;
 use librqbit::Session;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
+use tower_http::cors::CorsLayer;
 
 use super::embedded_rqbit::{HttpFallbackMap, LocalFileMap};
 
@@ -49,6 +50,7 @@ pub async fn spawn(
         .route("/stream/{torrent_id}/{file_idx}", get(stream_handler))
         .route("/proxy/{torrent_id}", get(proxy_handler))
         .route("/local/{token}", get(local_stream_handler))
+        .layer(CorsLayer::permissive())
         .with_state(state);
 
     tokio::spawn(async move {

@@ -37,6 +37,11 @@ async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 axum = "0.8"
+# CORS permisivo para el server de streaming local (127.0.0.1 solo, sin
+# auth ni cookies — hls.js hace fetch/XHR para segmentos, a diferencia de
+# <video src> que no está sujeto a CORS; sin esto, hls.js falla con
+# fragLoadError contra nuestro propio /local, confirmado en vivo).
+tower-http = { version = "0.6", features = ["cors"] }
 tokio-util = { version = "0.7", features = ["io"] }
 regex = "1"
 urlencoding = "2"
