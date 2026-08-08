@@ -13,9 +13,10 @@ const TABS: { id: Tab; label: string }[] = [
 
 interface IptvViewProps {
   onPlayChannel: (channel: { title: string; url: string; sourceId: string | null }) => void;
+  onPlayRecording: (recording: { id: string; name: string }) => void;
 }
 
-export function IptvView({ onPlayChannel }: IptvViewProps) {
+export function IptvView({ onPlayChannel, onPlayRecording }: IptvViewProps) {
   const [tab, setTab] = useState<Tab>("channels");
 
   return (
@@ -42,7 +43,7 @@ export function IptvView({ onPlayChannel }: IptvViewProps) {
 
       {tab === "channels" && <ChannelsTab onPlayChannel={onPlayChannel} />}
       {tab === "sources" && <SourcesTab />}
-      {tab === "recordings" && <RecordingsTab />}
+      {tab === "recordings" && <RecordingsTab onPlayRecording={onPlayRecording} />}
     </div>
   );
 }
@@ -54,7 +55,7 @@ function formatBytes(n: number): string {
   return `${n} B`;
 }
 
-function ChannelsTab({ onPlayChannel }: IptvViewProps) {
+function ChannelsTab({ onPlayChannel }: Pick<IptvViewProps, "onPlayChannel">) {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -227,7 +228,11 @@ const RECORDING_STATUS_LABEL: Record<RecordingInfo["status"], string> = {
   error: "Error",
 };
 
-function RecordingsTab() {
+interface RecordingsTabProps {
+  onPlayRecording: (recording: { id: string; name: string }) => void;
+}
+
+function RecordingsTab({ onPlayRecording }: RecordingsTabProps) {
   const [recordings, setRecordings] = useState<RecordingInfo[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -274,22 +279,30 @@ function RecordingsTab() {
             <p className="min-w-0 truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">
               {r.channel_name}
             </p>
-            {r.status === "recording" ? (
+            <div className="flex shrink-0 items-center gap-1.5">
               <button
-                onClick={() => api.stopRecording(r.id)}
-                className="shrink-0 rounded-md border border-red-300 px-2 py-1 text-[11px] text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                onClick={() => onPlayRecording({ id: r.id, name: r.channel_name })}
+                className="rounded-md border border-sky-600 px-2 py-1 text-[11px] font-semibold text-sky-600 hover:bg-sky-600 hover:text-white dark:text-sky-400"
               >
-                Detener
+                Reproducir
               </button>
-            ) : (
-              <button
-                onClick={() => remove(r.id)}
-                disabled={busyId === r.id}
-                className="shrink-0 rounded-md border border-zinc-300 px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-              >
-                Quitar
-              </button>
-            )}
+              {r.status === "recording" ? (
+                <button
+                  onClick={() => api.stopRecording(r.id)}
+                  className="rounded-md border border-red-300 px-2 py-1 text-[11px] text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                >
+                  Detener
+                </button>
+              ) : (
+                <button
+                  onClick={() => remove(r.id)}
+                  disabled={busyId === r.id}
+                  className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  Quitar
+                </button>
+              )}
+            </div>
           </div>
           <div className="flex items-center justify-between font-mono text-[10px] text-zinc-500 dark:text-zinc-400">
             <span>{formatBytes(r.bytes_written)}</span>

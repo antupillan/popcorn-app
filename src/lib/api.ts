@@ -80,6 +80,8 @@ export const api = {
 
   listRecordings: () => invoke<RecordingInfo[]>("list_recordings"),
 
+  getRecordingStreamUrl: (id: string) => invoke<string>("get_recording_stream_url", { id }),
+
   deleteRecording: (id: string) => invoke<void>("delete_recording", { id }),
 
   // Rápida (archive.org + Blender Foundation, ~1.5s medido en vivo) —

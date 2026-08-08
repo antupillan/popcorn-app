@@ -20,6 +20,7 @@ interface BibliotecaProps {
   onPlayChannel: (channel: { title: string; url: string; sourceId: string | null }) => void;
   onPlayLocal: (file: LocalFile) => void;
   onPlayOnline: (title: string, url: string) => void;
+  onPlayRecording: (recording: { id: string; name: string }) => void;
   onMediaAdded: () => void;
 }
 
@@ -33,6 +34,7 @@ export function Biblioteca({
   onPlayChannel,
   onPlayLocal,
   onPlayOnline,
+  onPlayRecording,
   onMediaAdded,
 }: BibliotecaProps) {
   const [tab, setTab] = useState<Tab>("online");
@@ -64,7 +66,7 @@ export function Biblioteca({
         />
       )}
       {tab === "local" && <LocalLibraryTab onPlayLocal={onPlayLocal} />}
-      {tab === "iptv" && <IptvView onPlayChannel={onPlayChannel} />}
+      {tab === "iptv" && <IptvView onPlayChannel={onPlayChannel} onPlayRecording={onPlayRecording} />}
       {tab === "coleccion" && <MediaLibrary items={mediaItems} onPlay={onPlayMedia} />}
     </div>
   );

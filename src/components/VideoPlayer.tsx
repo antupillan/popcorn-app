@@ -7,7 +7,8 @@ type VideoPlayerProps =
   | { kind: "media"; item: MediaItem; onClose: () => void }
   | { kind: "channel"; title: string; url: string; sourceId: string | null; onClose: () => void }
   | { kind: "local"; path: string; name: string; onClose: () => void }
-  | { kind: "online"; title: string; url: string; onClose: () => void };
+  | { kind: "online"; title: string; url: string; onClose: () => void }
+  | { kind: "recording"; id: string; name: string; onClose: () => void };
 
 const DEFAULT_MAX_RECORDING_MINUTES = 180;
 
@@ -22,12 +23,16 @@ function formatElapsed(seconds: number): string {
 
 export function VideoPlayer(props: VideoPlayerProps) {
   const { onClose, kind } = props;
-  const title = props.kind === "media" ? props.item.title : props.kind === "local" ? props.name : props.title;
+  const title =
+    props.kind === "media" ? props.item.title
+    : props.kind === "local" || props.kind === "recording" ? props.name
+    : props.title;
   const mediaItemId = props.kind === "media" ? props.item.id : null;
   const channelUrl = props.kind === "channel" ? props.url : null;
   const channelSourceId = props.kind === "channel" ? props.sourceId : null;
   const localPath = props.kind === "local" ? props.path : null;
   const onlineUrl = props.kind === "online" ? props.url : null;
+  const playbackRecordingId = props.kind === "recording" ? props.id : null;
 
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +44,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const resumeKey =
     kind === "media" ? `popcorn.playbackPosition.media:${mediaItemId}`
     : kind === "local" ? `popcorn.playbackPosition.local:${localPath}`
+    : kind === "recording" ? `popcorn.playbackPosition.recording:${playbackRecordingId}`
     : null;
 
   useEffect(() => {
@@ -63,8 +69,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // Ya viene resuelta por el caller (OnlineLibraryTab: addOnlineItem +
       // getStreamUrl) — sin fetch adicional acá, mismo criterio que "channel".
       setUrl(onlineUrl);
+    } else if (kind === "recording" && playbackRecordingId) {
+      api.getRecordingStreamUrl(playbackRecordingId).then(setUrl).catch((e) => setError(String(e)));
     }
-  }, [kind, mediaItemId, channelUrl, localPath, onlineUrl]);
+  }, [kind, mediaItemId, channelUrl, localPath, onlineUrl, playbackRecordingId]);
 
   useEffect(() => {
     if (kind !== "channel" || !url) return;

@@ -85,6 +85,30 @@ pub async fn list_recordings(db: State<'_, Db>) -> Result<Vec<RecordingInfo>, St
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// Resuelve una URL de streaming para una grabación ya hecha (o en curso
+/// — el .ts crece por el final, reproducir mientras graba es válido) —
+/// mismo mecanismo que la Biblioteca Local (`local_stream_url`, Range
+/// real, nunca expone el path crudo).
+#[tauri::command]
+pub async fn get_recording_stream_url(
+    app: AppHandle,
+    db: State<'_, Db>,
+    engine: State<'_, crate::commands::EngineState>,
+    id: String,
+) -> Result<String, String> {
+    let file_name: String = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT file_name FROM iptv_recordings WHERE id = ?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    let path = recordings_dir(&app).map_err(|e| e.to_string())?.join(&file_name);
+    engine.0.local_stream_url(path).await.map_err(|e| e.to_string())
+}
+
 /// Borra la fila y el archivo `.ts` real — rechaza explícito si sigue en
 /// curso (`status = 'recording'`) en vez de arriesgar borrar un archivo
 /// que el loop de grabación todavía está escribiendo.

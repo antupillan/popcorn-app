@@ -15,7 +15,8 @@ type Playing =
   | { kind: "media"; item: MediaItem }
   | { kind: "channel"; title: string; url: string; sourceId: string | null }
   | { kind: "local"; path: string; name: string }
-  | { kind: "online"; title: string; url: string };
+  | { kind: "online"; title: string; url: string }
+  | { kind: "recording"; id: string; name: string };
 
 const FIRST_RUN_KEY = "popcorn.acceptedFirstRun";
 const THEME_KEY = "popcorn.theme";
@@ -125,6 +126,7 @@ function App() {
               onPlayChannel={(channel) => setPlaying({ kind: "channel", ...channel })}
               onPlayLocal={(file) => setPlaying({ kind: "local", path: file.path, name: file.name })}
               onPlayOnline={(title, url) => setPlaying({ kind: "online", title, url })}
+              onPlayRecording={(recording) => setPlaying({ kind: "recording", ...recording })}
               onMediaAdded={refreshMedia}
             />
           )}
@@ -154,6 +156,9 @@ function App() {
       )}
       {playing?.kind === "online" && (
         <VideoPlayer kind="online" title={playing.title} url={playing.url} onClose={() => setPlaying(null)} />
+      )}
+      {playing?.kind === "recording" && (
+        <VideoPlayer kind="recording" id={playing.id} name={playing.name} onClose={() => setPlaying(null)} />
       )}
       {seedRatioTorrent && (
         <SeedRatioDialog
