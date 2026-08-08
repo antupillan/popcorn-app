@@ -13,7 +13,7 @@ import type { MediaItem, TorrentInfo } from "./types";
 
 type Playing =
   | { kind: "media"; item: MediaItem }
-  | { kind: "channel"; title: string; url: string }
+  | { kind: "channel"; title: string; url: string; sourceId: string | null }
   | { kind: "local"; path: string; name: string }
   | { kind: "online"; title: string; url: string };
 
@@ -141,7 +141,13 @@ function App() {
         <VideoPlayer kind="media" item={playing.item} onClose={() => setPlaying(null)} />
       )}
       {playing?.kind === "channel" && (
-        <VideoPlayer kind="channel" title={playing.title} url={playing.url} onClose={() => setPlaying(null)} />
+        <VideoPlayer
+          kind="channel"
+          title={playing.title}
+          url={playing.url}
+          sourceId={playing.sourceId}
+          onClose={() => setPlaying(null)}
+        />
       )}
       {playing?.kind === "local" && (
         <VideoPlayer kind="local" path={playing.path} name={playing.name} onClose={() => setPlaying(null)} />

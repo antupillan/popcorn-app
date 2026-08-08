@@ -12,7 +12,7 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 interface IptvViewProps {
-  onPlayChannel: (channel: { title: string; url: string }) => void;
+  onPlayChannel: (channel: { title: string; url: string; sourceId: string | null }) => void;
 }
 
 export function IptvView({ onPlayChannel }: IptvViewProps) {
@@ -75,7 +75,7 @@ function ChannelsTab({ onPlayChannel }: IptvViewProps) {
     setMessage(null);
     try {
       const validUrl = await api.validateChannelManifest(channel.url);
-      onPlayChannel({ title: channel.name, url: validUrl });
+      onPlayChannel({ title: channel.name, url: validUrl, sourceId: channel.source_id || null });
     } catch (e) {
       setMessage(`No se pudo validar el canal: ${e}`);
     } finally {

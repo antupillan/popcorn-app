@@ -17,7 +17,7 @@ const TABS: { id: Tab; label: string }[] = [
 interface BibliotecaProps {
   mediaItems: MediaItem[];
   onPlayMedia: (item: MediaItem) => void;
-  onPlayChannel: (channel: { title: string; url: string }) => void;
+  onPlayChannel: (channel: { title: string; url: string; sourceId: string | null }) => void;
   onPlayLocal: (file: LocalFile) => void;
   onPlayOnline: (title: string, url: string) => void;
   onMediaAdded: () => void;

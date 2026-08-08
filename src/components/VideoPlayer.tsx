@@ -5,15 +5,27 @@ import type { MediaItem } from "../types";
 
 type VideoPlayerProps =
   | { kind: "media"; item: MediaItem; onClose: () => void }
-  | { kind: "channel"; title: string; url: string; onClose: () => void }
+  | { kind: "channel"; title: string; url: string; sourceId: string | null; onClose: () => void }
   | { kind: "local"; path: string; name: string; onClose: () => void }
   | { kind: "online"; title: string; url: string; onClose: () => void };
+
+const DEFAULT_MAX_RECORDING_MINUTES = 180;
+
+function formatElapsed(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
 
 export function VideoPlayer(props: VideoPlayerProps) {
   const { onClose, kind } = props;
   const title = props.kind === "media" ? props.item.title : props.kind === "local" ? props.name : props.title;
   const mediaItemId = props.kind === "media" ? props.item.id : null;
   const channelUrl = props.kind === "channel" ? props.url : null;
+  const channelSourceId = props.kind === "channel" ? props.sourceId : null;
   const localPath = props.kind === "local" ? props.path : null;
   const onlineUrl = props.kind === "online" ? props.url : null;
 
@@ -88,25 +100,109 @@ export function VideoPlayer(props: VideoPlayerProps) {
     localStorage.setItem(resumeKey, String(video.currentTime));
   }
 
+  // REC vive en el reproductor, no en la lista de canales (estilo
+  // videocasetera: grabás lo que estás viendo) — solo aplica a "channel".
+  const [recordingId, setRecordingId] = useState<string | null>(null);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [showDurationPrompt, setShowDurationPrompt] = useState(false);
+  const [maxDurationMinutes, setMaxDurationMinutes] = useState(DEFAULT_MAX_RECORDING_MINUTES);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!recordingId) return;
+    const id = setInterval(() => setRecordingSeconds((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [recordingId]);
+
+  async function startRecording() {
+    if (kind !== "channel" || !channelUrl) return;
+    setShowDurationPrompt(false);
+    setRecordingError(null);
+    try {
+      const info = await api.startRecording(channelSourceId, title, channelUrl, maxDurationMinutes);
+      setRecordingId(info.id);
+      setRecordingSeconds(0);
+    } catch (e) {
+      setRecordingError(`No se pudo grabar: ${e}`);
+    }
+  }
+
+  async function stopRecording() {
+    if (!recordingId) return;
+    const id = recordingId;
+    setRecordingId(null);
+    await api.stopRecording(id).catch((e) => console.error(`[popcorn] no se pudo detener la grabación ${id}: ${e}`));
+  }
+
   function handleClose() {
     saveCurrentPosition();
+    // Dejás de ver, deja de grabar — no queda una grabación huérfana en
+    // background sin que el usuario la vea en pantalla.
+    if (recordingId) {
+      api.stopRecording(recordingId).catch((e) => console.error(`[popcorn] no se pudo detener la grabación al cerrar: ${e}`));
+    }
     onClose();
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
       <div className="flex w-full max-w-4xl flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium text-white">{title}</h2>
-          <button
-            onClick={handleClose}
-            className="rounded-md p-1.5 text-zinc-300 hover:bg-white/10"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
-          </button>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="min-w-0 truncate text-sm font-medium text-white">{title}</h2>
+          <div className="flex shrink-0 items-center gap-2">
+            {kind === "channel" && !recordingId && !showDurationPrompt && (
+              <button
+                onClick={() => setShowDurationPrompt(true)}
+                className="flex items-center gap-1.5 rounded-md border border-red-500/60 px-2 py-1 text-[11px] font-semibold text-red-400 hover:bg-red-500/10"
+              >
+                <span className="h-2 w-2 rounded-full bg-red-500" />
+                REC
+              </button>
+            )}
+            {kind === "channel" && showDurationPrompt && (
+              <div className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1">
+                <label className="text-[10px] text-zinc-400">Máx (min)</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={maxDurationMinutes}
+                  onChange={(e) => setMaxDurationMinutes(Number(e.target.value) || DEFAULT_MAX_RECORDING_MINUTES)}
+                  className="w-14 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-[11px] text-white"
+                />
+                <button
+                  onClick={startRecording}
+                  className="rounded bg-red-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-red-500"
+                >
+                  Iniciar
+                </button>
+                <button
+                  onClick={() => setShowDurationPrompt(false)}
+                  className="text-[11px] text-zinc-400 hover:text-zinc-200"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+            {kind === "channel" && recordingId && (
+              <button
+                onClick={stopRecording}
+                className="flex items-center gap-1.5 rounded-md border border-red-500 bg-red-500/10 px-2 py-1 text-[11px] font-semibold text-red-400"
+              >
+                <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
+                {formatElapsed(recordingSeconds)} · Detener
+              </button>
+            )}
+            <button
+              onClick={handleClose}
+              className="rounded-md p-1.5 text-zinc-300 hover:bg-white/10"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
+        {recordingError && <p className="text-xs text-red-400">{recordingError}</p>}
 
         <div className="flex aspect-video items-center justify-center overflow-hidden rounded-xl bg-black">
           {error && <p className="p-4 text-center text-xs text-red-400">{error}</p>}

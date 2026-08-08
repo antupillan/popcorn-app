@@ -69,8 +69,12 @@ export const api = {
   validateChannelManifest: (url: string) =>
     invoke<string>("validate_channel_manifest", { url }),
 
-  startRecording: (sourceId: string | null, channelName: string, manifestUrl: string) =>
-    invoke<RecordingInfo>("start_recording", { sourceId, channelName, manifestUrl }),
+  startRecording: (
+    sourceId: string | null,
+    channelName: string,
+    manifestUrl: string,
+    maxDurationMinutes: number | null,
+  ) => invoke<RecordingInfo>("start_recording", { sourceId, channelName, manifestUrl, maxDurationMinutes }),
 
   stopRecording: (id: string) => invoke<void>("stop_recording", { id }),
 
