@@ -102,13 +102,34 @@ pub async fn start_recording(
     manifest_url: String,
     max_duration_minutes: Option<u32>,
 ) -> Result<RecordingInfo, String> {
-    let manifest_bytes = crate::http_retry::send_with_retry(|| http.0.get(&manifest_url))
-        .await
-        .map_err(|e| e.to_string())?
-        .bytes()
+    let resp = crate::http_retry::send_with_retry(|| http.0.get(&manifest_url))
         .await
         .map_err(|e| e.to_string())?;
-    hls_playlist::parse_media_playlist(&manifest_bytes).map_err(|e| e.to_string())?;
+    let base_url = resp.url().clone();
+    let manifest_bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+
+    // Si es playlist maestra (multi-bitrate), resuelve la variante de
+    // mejor calidad y graba esa de ahí en más — el loop de grabación no
+    // elige variantes en cada poll, necesita una URL de media playlist
+    // directa desde el arranque.
+    let manifest_url = match hls_playlist::resolve_master_variant(&manifest_bytes, &base_url)
+        .map_err(|e| e.to_string())?
+    {
+        Some(variant_url) => {
+            let variant_bytes = crate::http_retry::send_with_retry(|| http.0.get(&variant_url))
+                .await
+                .map_err(|e| e.to_string())?
+                .bytes()
+                .await
+                .map_err(|e| e.to_string())?;
+            hls_playlist::parse_media_playlist(&variant_bytes).map_err(|e| e.to_string())?;
+            variant_url
+        }
+        None => {
+            hls_playlist::parse_media_playlist(&manifest_bytes).map_err(|e| e.to_string())?;
+            manifest_url
+        }
+    };
 
     let id = uuid::Uuid::new_v4().to_string();
     let file_name = format!("{id}.ts");

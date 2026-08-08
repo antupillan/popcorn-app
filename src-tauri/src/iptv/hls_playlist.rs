@@ -1,3 +1,4 @@
+use anyhow::Context;
 use m3u8_rs::{parse_playlist_res, KeyMethod, Playlist};
 
 #[derive(Debug)]
@@ -61,6 +62,29 @@ pub fn parse_media_playlist(body: &[u8]) -> anyhow::Result<MediaPlaylist> {
             .map(|s| Segment { uri: s.uri, duration: s.duration })
             .collect(),
     })
+}
+
+/// Si `body` es una playlist maestra (multi-bitrate), resuelve la URL de
+/// la variante de mayor `bandwidth` (mejor calidad disponible — grabar
+/// prioriza calidad sobre el streaming adaptativo que sí quiere el
+/// reproductor en vivo) contra `base_url`. `None` si no es maestra —
+/// nada que resolver, `parse_media_playlist` ya la procesa directo.
+pub fn resolve_master_variant(body: &[u8], base_url: &reqwest::Url) -> anyhow::Result<Option<String>> {
+    let playlist = parse_playlist_res(body)
+        .map_err(|e| anyhow::anyhow!("no se pudo parsear el manifest HLS: {e}"))?;
+    let Playlist::MasterPlaylist(master) = playlist else {
+        return Ok(None);
+    };
+    let best = master
+        .variants
+        .iter()
+        .filter(|v| !v.is_i_frame)
+        .max_by_key(|v| v.bandwidth)
+        .context("playlist maestra sin variantes de video reproducibles")?;
+    let resolved = base_url
+        .join(&best.uri)
+        .with_context(|| format!("URI de variante inválida '{}'", best.uri))?;
+    Ok(Some(resolved.to_string()))
 }
 
 #[cfg(test)]
@@ -173,6 +197,23 @@ video.ts
     }
 
     #[test]
+    fn resolve_master_variant_picks_highest_bandwidth_and_resolves_relative_uri() {
+        let base = reqwest::Url::parse("http://example.org/live/master.m3u8").unwrap();
+        let resolved = resolve_master_variant(MASTER_PLAYLIST, &base).unwrap();
+        assert_eq!(
+            resolved.as_deref(),
+            Some("http://example.org/live/mid/index.m3u8"),
+            "debe elegir la variante de mayor bandwidth (2560000 > 1280000), resuelta contra la URL base"
+        );
+    }
+
+    #[test]
+    fn resolve_master_variant_returns_none_for_media_playlist() {
+        let base = reqwest::Url::parse("http://example.org/live/index.m3u8").unwrap();
+        assert!(resolve_master_variant(VOD_PLAYLIST, &base).unwrap().is_none());
+    }
+
+    #[test]
     fn rejects_malformed_input() {
         assert!(parse_media_playlist(b"esto no es un m3u8 valido").is_err());
     }
@@ -192,5 +233,27 @@ video.ts
             .expect("debe poder leerse el body");
         let err = parse_media_playlist(&body).unwrap_err();
         assert!(err.to_string().contains("maestra"), "error real: {err}");
+    }
+
+    #[tokio::test]
+    #[ignore = "red real, no apto para CI por defecto — correr manualmente contra un canal público real"]
+    async fn resolves_real_master_playlist_to_a_playable_media_variant() {
+        let url = "http://185.47.212.25:8080/24h_HD/index.m3u8";
+        let resp = reqwest::get(url).await.expect("el canal real debe responder");
+        let base_url = resp.url().clone();
+        let body = resp.bytes().await.expect("debe poder leerse el body");
+
+        let variant_url = resolve_master_variant(&body, &base_url)
+            .unwrap()
+            .expect("debe reconocer la maestra real y resolver una variante");
+
+        let variant_body = reqwest::get(&variant_url)
+            .await
+            .expect("la variante resuelta debe responder")
+            .bytes()
+            .await
+            .expect("debe poder leerse el body de la variante");
+        parse_media_playlist(&variant_body)
+            .expect("la variante resuelta debe ser una media playlist real, grabable");
     }
 }
