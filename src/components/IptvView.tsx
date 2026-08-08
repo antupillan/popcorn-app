@@ -13,7 +13,7 @@ const TABS: { id: Tab; label: string }[] = [
 
 interface IptvViewProps {
   onPlayChannel: (channel: { title: string; url: string; sourceId: string | null }) => void;
-  onPlayRecording: (recording: { id: string; name: string }) => void;
+  onPlayRecording: (recording: { id: string; name: string; durationSeconds: number }) => void;
 }
 
 export function IptvView({ onPlayChannel, onPlayRecording }: IptvViewProps) {
@@ -229,7 +229,7 @@ const RECORDING_STATUS_LABEL: Record<RecordingInfo["status"], string> = {
 };
 
 interface RecordingsTabProps {
-  onPlayRecording: (recording: { id: string; name: string }) => void;
+  onPlayRecording: (recording: { id: string; name: string; durationSeconds: number }) => void;
 }
 
 function RecordingsTab({ onPlayRecording }: RecordingsTabProps) {
@@ -281,7 +281,18 @@ function RecordingsTab({ onPlayRecording }: RecordingsTabProps) {
             </p>
             <div className="flex shrink-0 items-center gap-1.5">
               <button
-                onClick={() => onPlayRecording({ id: r.id, name: r.channel_name })}
+                onClick={() => {
+                  // Duración real (started_at hasta stopped_at, o "ahora" si
+                  // sigue grabando) — el manifest sintético de hls.js
+                  // (VideoPlayer, kind "recording") la necesita real, no
+                  // inventada, para no confundir su buffering.
+                  const end = r.stopped_at ? new Date(r.stopped_at) : new Date();
+                  const durationSeconds = Math.max(
+                    10,
+                    (end.getTime() - new Date(r.started_at).getTime()) / 1000,
+                  );
+                  onPlayRecording({ id: r.id, name: r.channel_name, durationSeconds });
+                }}
                 className="rounded-md border border-sky-600 px-2 py-1 text-[11px] font-semibold text-sky-600 hover:bg-sky-600 hover:text-white dark:text-sky-400"
               >
                 Reproducir

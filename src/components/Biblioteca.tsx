@@ -20,7 +20,7 @@ interface BibliotecaProps {
   onPlayChannel: (channel: { title: string; url: string; sourceId: string | null }) => void;
   onPlayLocal: (file: LocalFile) => void;
   onPlayOnline: (title: string, url: string) => void;
-  onPlayRecording: (recording: { id: string; name: string }) => void;
+  onPlayRecording: (recording: { id: string; name: string; durationSeconds: number }) => void;
   onMediaAdded: () => void;
 }
 

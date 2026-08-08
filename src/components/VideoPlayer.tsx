@@ -8,7 +8,7 @@ type VideoPlayerProps =
   | { kind: "channel"; title: string; url: string; sourceId: string | null; onClose: () => void }
   | { kind: "local"; path: string; name: string; onClose: () => void }
   | { kind: "online"; title: string; url: string; onClose: () => void }
-  | { kind: "recording"; id: string; name: string; onClose: () => void };
+  | { kind: "recording"; id: string; name: string; durationSeconds: number; onClose: () => void };
 
 const DEFAULT_MAX_RECORDING_MINUTES = 180;
 
@@ -33,6 +33,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const localPath = props.kind === "local" ? props.path : null;
   const onlineUrl = props.kind === "online" ? props.url : null;
   const playbackRecordingId = props.kind === "recording" ? props.id : null;
+  const recordingDurationSeconds = props.kind === "recording" ? props.durationSeconds : null;
 
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -85,11 +86,15 @@ export function VideoPlayer(props: VideoPlayerProps) {
     // vivo). hls.js sí trae demuxer de MPEG-TS, pero espera un manifest —
     // se arma uno sintético de un solo segmento apuntando al mismo
     // archivo, reusando el demuxer en vez de duplicar lógica de remux.
+    // La duración tiene que ser la real (started_at/stopped_at, ver
+    // IptvView) — un placeholder inventado confundió el buffering de
+    // hls.js (pantalla negra sin error, confirmado en vivo).
     const objectUrls: string[] = [];
     const source =
       kind === "recording"
         ? (() => {
-            const manifest = `#EXTM3U\n#EXT-X-TARGETDURATION:36000\n#EXTINF:36000,\n${url}\n#EXT-X-ENDLIST\n`;
+            const duration = Math.ceil(recordingDurationSeconds ?? 60);
+            const manifest = `#EXTM3U\n#EXT-X-TARGETDURATION:${duration}\n#EXTINF:${duration},\n${url}\n#EXT-X-ENDLIST\n`;
             const blobUrl = URL.createObjectURL(new Blob([manifest], { type: "application/vnd.apple.mpegurl" }));
             objectUrls.push(blobUrl);
             return blobUrl;
@@ -118,7 +123,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       return;
     }
     setError("Este navegador no soporta HLS.");
-  }, [kind, url]);
+  }, [kind, url, recordingDurationSeconds]);
 
   const lastSavedRef = useRef(0);
 
