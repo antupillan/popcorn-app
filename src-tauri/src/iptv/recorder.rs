@@ -91,6 +91,7 @@ pub async fn list_recordings(db: State<'_, Db>) -> Result<Vec<RecordingInfo>, St
 /// lanza el loop de descarga en segundo plano. Fire-and-forget: devuelve de
 /// inmediato, el loop actualiza `bytes_written`/`status` por su cuenta.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn start_recording(
     app: AppHandle,
     http: State<'_, crate::commands::HttpClient>,
@@ -99,6 +100,7 @@ pub async fn start_recording(
     source_id: Option<String>,
     channel_name: String,
     manifest_url: String,
+    max_duration_minutes: Option<u32>,
 ) -> Result<RecordingInfo, String> {
     let manifest_bytes = crate::http_retry::send_with_retry(|| http.0.get(&manifest_url))
         .await
@@ -133,7 +135,7 @@ pub async fn start_recording(
     let task_id = id.clone();
     let task_manifest_url = manifest_url.clone();
     tokio::spawn(async move {
-        recording_loop(task_app, task_client, task_id, task_manifest_url, stop_flag).await;
+        recording_loop(task_app, task_client, task_id, task_manifest_url, stop_flag, max_duration_minutes).await;
     });
 
     Ok(RecordingInfo {
@@ -269,7 +271,13 @@ async fn recording_loop(
     id: String,
     manifest_url: String,
     stop_flag: Arc<AtomicBool>,
+    max_duration_minutes: Option<u32>,
 ) {
+    // Tope de duración real (determinístico, no depende de que el usuario
+    // mire la pantalla) — evita que una grabación quede corriendo para
+    // siempre si nadie la para a mano.
+    let deadline = max_duration_minutes
+        .map(|m| std::time::Instant::now() + std::time::Duration::from_secs(m as u64 * 60));
     let file_path = match recordings_dir(&app) {
         Ok(dir) => dir.join(format!("{id}.ts")),
         Err(e) => return finish(&app, &id, RecordingEnd::Error(e.to_string())).await,
@@ -290,6 +298,10 @@ async fn recording_loop(
     let mut total_bytes: i64 = 0;
 
     loop {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            update_bytes_written(&app, &id, total_bytes);
+            return finish(&app, &id, RecordingEnd::Stopped).await;
+        }
         match run_one_poll(&client, &manifest_url, &mut file, &mut seen, &mut total_bytes, &stop_flag).await {
             Ok(PollOutcome::Continue { target_duration }) => {
                 update_bytes_written(&app, &id, total_bytes);
