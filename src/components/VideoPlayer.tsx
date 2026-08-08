@@ -75,26 +75,46 @@ export function VideoPlayer(props: VideoPlayerProps) {
   }, [kind, mediaItemId, channelUrl, localPath, onlineUrl, playbackRecordingId]);
 
   useEffect(() => {
-    if (kind !== "channel" || !url) return;
+    if ((kind !== "channel" && kind !== "recording") || !url) return;
     const video = videoRef.current;
     if (!video) return;
 
+    // "recording" es .ts crudo (concatenación real de segmentos HLS, ver
+    // iptv/recorder.rs) — <video src> directo no lo reproduce en la
+    // mayoría de navegadores (MEDIA_ERR_SRC_NOT_SUPPORTED, confirmado en
+    // vivo). hls.js sí trae demuxer de MPEG-TS, pero espera un manifest —
+    // se arma uno sintético de un solo segmento apuntando al mismo
+    // archivo, reusando el demuxer en vez de duplicar lógica de remux.
+    const objectUrls: string[] = [];
+    const source =
+      kind === "recording"
+        ? (() => {
+            const manifest = `#EXTM3U\n#EXT-X-TARGETDURATION:36000\n#EXTINF:36000,\n${url}\n#EXT-X-ENDLIST\n`;
+            const blobUrl = URL.createObjectURL(new Blob([manifest], { type: "application/vnd.apple.mpegurl" }));
+            objectUrls.push(blobUrl);
+            return blobUrl;
+          })()
+        : url;
+
     if (Hls.isSupported()) {
       const hls = new Hls();
-      hls.loadSource(url);
+      hls.loadSource(source);
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_event, data) => {
         // Mismo espíritu que el MediaError real del bug #18: no tragarse el
         // motivo — hls.js distingue tipo/detalle/si es fatal.
         console.error(`[popcorn] hls.js error: type=${data.type} details=${data.details} fatal=${data.fatal}`);
         if (data.fatal) {
-          setError(`El canal no pudo reproducirse (hls.js: ${data.type}/${data.details}).`);
+          setError(`No se pudo reproducir (hls.js: ${data.type}/${data.details}).`);
         }
       });
-      return () => hls.destroy();
+      return () => {
+        hls.destroy();
+        objectUrls.forEach((u) => URL.revokeObjectURL(u));
+      };
     }
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = url;
+      video.src = source;
       return;
     }
     setError("Este navegador no soporta HLS.");
@@ -220,7 +240,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           {url && (
             <video
               ref={videoRef}
-              src={kind !== "channel" ? url : undefined}
+              src={kind !== "channel" && kind !== "recording" ? url : undefined}
               controls
               autoPlay
               className="h-full w-full"
@@ -246,7 +266,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
                 if (resumeKey) localStorage.removeItem(resumeKey);
               }}
               onError={() => {
-                if (kind === "channel") return; // hls.js ya reporta sus propios errores, más específicos
+                if (kind === "channel" || kind === "recording") return; // hls.js ya reporta sus propios errores, más específicos
                 const el = videoRef.current;
                 const mediaError = el?.error;
                 // El código/mensaje de MediaError es la señal real que falta
