@@ -111,8 +111,21 @@ export function VideoPlayer(props: VideoPlayerProps) {
         console.error(`[popcorn] hls.js error: type=${data.type} details=${data.details} fatal=${data.fatal}`);
         if (data.fatal) {
           setError(`No se pudo reproducir (hls.js: ${data.type}/${data.details}).`);
+        } else if (kind === "recording") {
+          // Sin acceso confiable a devtools para diagnosticar "recording"
+          // (feature nueva, frágil) — se muestra igual aunque no sea fatal,
+          // temporal hasta confirmar que anda de punta a punta.
+          setError((prev) => `${prev ? prev + " | " : ""}(no fatal) ${data.type}/${data.details}`);
         }
       });
+      if (kind === "recording") {
+        hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
+          console.error(`[popcorn] hls.js manifest parsed: levels=${data.levels.length}`);
+        });
+        hls.on(Hls.Events.FRAG_LOADED, (_e, data) => {
+          console.error(`[popcorn] hls.js frag loaded: bytes=${data.frag.stats?.total ?? "?"}`);
+        });
+      }
       return () => {
         hls.destroy();
         objectUrls.forEach((u) => URL.revokeObjectURL(u));
