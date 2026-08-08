@@ -85,6 +85,37 @@ pub async fn list_recordings(db: State<'_, Db>) -> Result<Vec<RecordingInfo>, St
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// Borra la fila y el archivo `.ts` real — rechaza explícito si sigue en
+/// curso (`status = 'recording'`) en vez de arriesgar borrar un archivo
+/// que el loop de grabación todavía está escribiendo.
+#[tauri::command]
+pub async fn delete_recording(app: AppHandle, db: State<'_, Db>, id: String) -> Result<(), String> {
+    let (status, file_name): (String, String) = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT status, file_name FROM iptv_recordings WHERE id = ?1",
+            [&id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    if status == "recording" {
+        return Err("la grabación sigue en curso — detenela antes de quitarla".to_string());
+    }
+
+    let path = recordings_dir(&app).map_err(|e| e.to_string())?.join(&file_name);
+    if let Err(e) = tokio::fs::remove_file(&path).await {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!("no se pudo borrar {}: {e}", path.display()));
+        }
+    }
+
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM iptv_recordings WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Valida el manifest una vez arriba (rechaza playlist maestra/cifrado/
 /// byte-range con error explícito, nunca arranca una grabación que sabemos
 /// que va a quedar corrupta o incompleta — Mandato 4), inserta la fila y

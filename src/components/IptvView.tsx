@@ -229,11 +229,13 @@ const RECORDING_STATUS_LABEL: Record<RecordingInfo["status"], string> = {
 
 function RecordingsTab() {
   const [recordings, setRecordings] = useState<RecordingInfo[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  function refresh() {
+    api.listRecordings().then(setRecordings).catch(console.error);
+  }
 
   useEffect(() => {
-    function refresh() {
-      api.listRecordings().then(setRecordings).catch(console.error);
-    }
     refresh();
     // Poll mientras la pestaña está montada — bytes_written avanza en
     // segundo plano sin ninguna acción del usuario que dispare un refresh.
@@ -241,10 +243,22 @@ function RecordingsTab() {
     return () => clearInterval(id);
   }, []);
 
+  async function remove(id: string) {
+    setBusyId(id);
+    try {
+      await api.deleteRecording(id);
+      refresh();
+    } catch (e) {
+      console.error(`[popcorn] no se pudo quitar la grabación ${id}: ${e}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   if (recordings.length === 0) {
     return (
       <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
-        No hay grabaciones todavía — usá "Grabar" en la pestaña Canales.
+        No hay grabaciones todavía — el botón REC está en el reproductor al ver un canal.
       </p>
     );
   }
@@ -260,12 +274,20 @@ function RecordingsTab() {
             <p className="min-w-0 truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">
               {r.channel_name}
             </p>
-            {r.status === "recording" && (
+            {r.status === "recording" ? (
               <button
                 onClick={() => api.stopRecording(r.id)}
                 className="shrink-0 rounded-md border border-red-300 px-2 py-1 text-[11px] text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
               >
                 Detener
+              </button>
+            ) : (
+              <button
+                onClick={() => remove(r.id)}
+                disabled={busyId === r.id}
+                className="shrink-0 rounded-md border border-zinc-300 px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                Quitar
               </button>
             )}
           </div>

@@ -80,6 +80,8 @@ export const api = {
 
   listRecordings: () => invoke<RecordingInfo[]>("list_recordings"),
 
+  deleteRecording: (id: string) => invoke<void>("delete_recording", { id }),
+
   // Rápida (archive.org + Blender Foundation, ~1.5s medido en vivo) —
   // separada de browsePublicDomainTorrents (ese sitio de terceros tarda
   // ~8s) para que el frontend pueda renderizar cada grupo apenas responde

@@ -79,6 +79,7 @@ pub fn run() {
             iptv::recorder::start_recording,
             iptv::recorder::stop_recording,
             iptv::recorder::list_recordings,
+            iptv::recorder::delete_recording,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
