@@ -21,6 +21,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [error, setError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  // Solo tiene sentido para contenido no-vivo con identidad estable entre
+  // aperturas — "channel" es TV en vivo, "online" es la URL efímera del
+  // primer play (la próxima apertura ya es "media", ver OnlineLibraryTab).
+  const resumeKey =
+    kind === "media" ? `popcorn.playbackPosition.media:${mediaItemId}`
+    : kind === "local" ? `popcorn.playbackPosition.local:${localPath}`
+    : null;
+
   useEffect(() => {
     setUrl(null);
     setError(null);
@@ -72,13 +80,26 @@ export function VideoPlayer(props: VideoPlayerProps) {
     setError("Este navegador no soporta HLS.");
   }, [kind, url]);
 
+  const lastSavedRef = useRef(0);
+
+  function saveCurrentPosition() {
+    const video = videoRef.current;
+    if (!resumeKey || !video) return;
+    localStorage.setItem(resumeKey, String(video.currentTime));
+  }
+
+  function handleClose() {
+    saveCurrentPosition();
+    onClose();
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
       <div className="flex w-full max-w-4xl flex-col gap-2">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium text-white">{title}</h2>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="rounded-md p-1.5 text-zinc-300 hover:bg-white/10"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
@@ -99,6 +120,27 @@ export function VideoPlayer(props: VideoPlayerProps) {
               controls
               autoPlay
               className="h-full w-full"
+              onLoadedMetadata={() => {
+                if (!resumeKey) return;
+                const video = videoRef.current;
+                if (!video) return;
+                const saved = Number(localStorage.getItem(resumeKey));
+                // No retoma si está a menos de 15s del final — evita reabrir
+                // justo en los créditos de algo que ya se terminó de ver.
+                if (saved > 0 && saved < video.duration - 15) {
+                  video.currentTime = saved;
+                }
+              }}
+              onTimeUpdate={() => {
+                const video = videoRef.current;
+                if (!resumeKey || !video) return;
+                if (Math.abs(video.currentTime - lastSavedRef.current) < 5) return;
+                lastSavedRef.current = video.currentTime;
+                saveCurrentPosition();
+              }}
+              onEnded={() => {
+                if (resumeKey) localStorage.removeItem(resumeKey);
+              }}
               onError={() => {
                 if (kind === "channel") return; // hls.js ya reporta sus propios errores, más específicos
                 const el = videoRef.current;
