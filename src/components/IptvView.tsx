@@ -83,19 +83,6 @@ function ChannelsTab({ onPlayChannel }: IptvViewProps) {
     }
   }
 
-  async function record(channel: Channel) {
-    setBusyUrl(channel.url);
-    setMessage(null);
-    try {
-      await api.startRecording(channel.source_id || null, channel.name, channel.url);
-      setMessage(`Grabación iniciada: ${channel.name} (ver pestaña Grabaciones).`);
-    } catch (e) {
-      setMessage(`No se pudo iniciar la grabación: ${e}`);
-    } finally {
-      setBusyUrl(null);
-    }
-  }
-
   if (loading) {
     return <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">Cargando canales…</p>;
   }
@@ -113,48 +100,57 @@ function ChannelsTab({ onPlayChannel }: IptvViewProps) {
   return (
     <div className="flex flex-col gap-2 p-4">
       {message && <p className="text-xs text-sky-600 dark:text-sky-400">{message}</p>}
-      <ul className="flex flex-col gap-1.5">
-        {channels.map((c) => (
-          <li
-            key={`${c.source_id}:${c.url}`}
-            className="flex items-center justify-between gap-2 rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800"
-          >
-            <div className="flex min-w-0 items-center gap-2.5">
-              {c.logo_url ? (
-                <img
-                  src={c.logo_url}
-                  alt=""
-                  className="h-10 w-10 shrink-0 rounded-md bg-zinc-100 object-contain dark:bg-zinc-800"
-                  loading="lazy"
-                  onError={(e) => (e.currentTarget.style.visibility = "hidden")}
-                />
-              ) : (
-                <div className="h-10 w-10 shrink-0 rounded-md bg-zinc-100 dark:bg-zinc-800" />
-              )}
-              <div className="min-w-0">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+        {channels.map((c) => {
+          const key = `${c.source_id}:${c.url}`;
+          return (
+            <button
+              key={key}
+              onClick={() => play(c)}
+              disabled={busyUrl === c.url}
+              className="group flex flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white text-left disabled:cursor-wait dark:border-zinc-800 dark:bg-zinc-900"
+            >
+              <div className="relative flex aspect-video items-center justify-center bg-zinc-100 dark:bg-zinc-800">
+                {c.logo_url ? (
+                  <img
+                    src={c.logo_url}
+                    alt=""
+                    className="h-full w-full object-contain p-3"
+                    loading="lazy"
+                    onError={(e) => (e.currentTarget.style.visibility = "hidden")}
+                  />
+                ) : (
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    className="h-8 w-8 text-zinc-400 opacity-50"
+                  >
+                    <path d="M4 15a8 8 0 0 1 16 0M7.5 15a4.5 4.5 0 0 1 9 0" />
+                    <circle cx="12" cy="15" r="1.25" fill="currentColor" stroke="none" />
+                  </svg>
+                )}
+                <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/25">
+                  {busyUrl === c.url ? (
+                    <svg viewBox="0 0 24 24" className="h-9 w-9 animate-spin text-white/90 drop-shadow">
+                      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2.5" strokeDasharray="42" strokeDashoffset="14" strokeLinecap="round" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" className="h-9 w-9 text-white/80 opacity-0 drop-shadow transition-opacity group-hover:opacity-100">
+                      <path d="M8 5v14l11-7z" fill="currentColor" />
+                    </svg>
+                  )}
+                </span>
+              </div>
+              <div className="p-2">
                 <p className="truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">{c.name}</p>
                 {c.group && <p className="truncate text-[10px] text-zinc-500">{c.group}</p>}
               </div>
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <button
-                onClick={() => record(c)}
-                disabled={busyUrl === c.url}
-                className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-              >
-                Grabar
-              </button>
-              <button
-                onClick={() => play(c)}
-                disabled={busyUrl === c.url}
-                className="rounded-md border border-sky-600 px-2.5 py-1 text-[11px] font-semibold text-sky-600 hover:bg-sky-600 hover:text-white disabled:opacity-50 dark:text-sky-400"
-              >
-                {busyUrl === c.url ? "…" : "Ver"}
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
