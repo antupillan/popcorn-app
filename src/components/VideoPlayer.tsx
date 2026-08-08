@@ -121,6 +121,15 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (kind === "recording") {
         hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
           console.error(`[popcorn] hls.js manifest parsed: levels=${data.levels.length}`);
+          // autoPlay (atributo HTML) puede fallar en silencio con MSE en
+          // este WebView — .play() explícito rechaza una promesa real que
+          // sí podemos atrapar y mostrar, en vez de quedar bufferizando
+          // para siempre sin que nadie consuma el buffer (bufferFullError,
+          // confirmado en vivo).
+          video.play().catch((e) => {
+            console.error(`[popcorn] video.play() rechazado: ${e}`);
+            setError(`No se pudo iniciar la reproducción automáticamente: ${e}`);
+          });
         });
         hls.on(Hls.Events.FRAG_LOADED, (_e, data) => {
           console.error(`[popcorn] hls.js frag loaded: bytes=${data.frag.stats?.total ?? "?"}`);
