@@ -7,11 +7,24 @@ pub struct Segment {
     pub duration: f32,
 }
 
+/// Segmento de inicialización (`EXT-X-MAP`) — obligatorio para grabar
+/// streams fMP4/CMAF (contiene los átomos `ftyp`/`moov` que definen el
+/// track; sin él, cada fragmento tiene `moof`/`mdat` pero ningún demuxer
+/// puede interpretarlos). Streams MPEG-TS clásicos no lo usan.
+#[derive(Debug, Clone)]
+pub struct InitSegment {
+    pub uri: String,
+    /// (offset, length) — `EXT-X-MAP` puede apuntar a un rango de bytes
+    /// dentro de un archivo más grande en vez de a un recurso propio.
+    pub byte_range: Option<(u64, u64)>,
+}
+
 #[derive(Debug)]
 pub struct MediaPlaylist {
     pub target_duration: u64,
     pub end_list: bool,
     pub segments: Vec<Segment>,
+    pub init_segment: Option<InitSegment>,
 }
 
 /// Parsea la *media playlist* HLS de un canal (segmentos de video — no
@@ -53,6 +66,18 @@ pub fn parse_media_playlist(body: &[u8]) -> anyhow::Result<MediaPlaylist> {
         }
     }
 
+    // m3u8-rs solo adjunta EXT-X-MAP al segmento que sigue inmediatamente
+    // al tag en el manifest (no lo propaga a los siguientes, aunque la RFC
+    // 8216 §4.3.2.5 dice que aplica al resto de la playlist) — alcanza con
+    // mirar el primero que lo tenga, el init segment es el mismo para toda
+    // la grabación.
+    let init_segment = media.segments.iter().find_map(|s| {
+        s.map.as_ref().map(|m| InitSegment {
+            uri: m.uri.clone(),
+            byte_range: m.byte_range.as_ref().map(|b| (b.offset.unwrap_or(0), b.length)),
+        })
+    });
+
     Ok(MediaPlaylist {
         target_duration: media.target_duration,
         end_list: media.end_list,
@@ -61,6 +86,7 @@ pub fn parse_media_playlist(body: &[u8]) -> anyhow::Result<MediaPlaylist> {
             .into_iter()
             .map(|s| Segment { uri: s.uri, duration: s.duration })
             .collect(),
+        init_segment,
     })
 }
 
@@ -139,6 +165,18 @@ http://media.example.com/fileSequence52.ts
 http://media.example.com/fileSequence53.ts
 ";
 
+    const FMP4_PLAYLIST: &[u8] = b"#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-TARGETDURATION:6
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXT-X-MAP:URI=\"init.mp4\"
+#EXTINF:6.0,
+seg1.m4s
+#EXTINF:6.0,
+seg2.m4s
+#EXT-X-ENDLIST
+";
+
     const BYTERANGE_PLAYLIST: &[u8] = b"#EXTM3U
 #EXT-X-VERSION:4
 #EXT-X-TARGETDURATION:10
@@ -151,6 +189,21 @@ video.ts
 video.ts
 #EXT-X-ENDLIST
 ";
+
+    #[test]
+    fn parses_fmp4_playlist_and_extracts_init_segment() {
+        let playlist = parse_media_playlist(FMP4_PLAYLIST).unwrap();
+        assert_eq!(playlist.segments.len(), 2);
+        let init = playlist.init_segment.expect("debe extraer el EXT-X-MAP");
+        assert_eq!(init.uri, "init.mp4");
+        assert_eq!(init.byte_range, None);
+    }
+
+    #[test]
+    fn media_playlist_without_map_has_no_init_segment() {
+        let playlist = parse_media_playlist(LIVE_PLAYLIST).unwrap();
+        assert!(playlist.init_segment.is_none(), "MPEG-TS clásico no usa EXT-X-MAP");
+    }
 
     #[test]
     fn parses_live_playlist_without_endlist() {

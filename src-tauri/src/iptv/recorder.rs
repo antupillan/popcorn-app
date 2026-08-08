@@ -167,24 +167,36 @@ pub async fn start_recording(
     // mejor calidad y graba esa de ahí en más — el loop de grabación no
     // elige variantes en cada poll, necesita una URL de media playlist
     // directa desde el arranque.
-    let manifest_url = match hls_playlist::resolve_master_variant(&manifest_bytes, &base_url)
-        .map_err(|e| e.to_string())?
-    {
-        Some(variant_url) => {
-            let variant_bytes = crate::http_retry::send_with_retry(|| http.0.get(&variant_url))
-                .await
-                .map_err(|e| e.to_string())?
-                .bytes()
-                .await
-                .map_err(|e| e.to_string())?;
-            hls_playlist::parse_media_playlist(&variant_bytes).map_err(|e| e.to_string())?;
-            variant_url
-        }
-        None => {
-            hls_playlist::parse_media_playlist(&manifest_bytes).map_err(|e| e.to_string())?;
-            manifest_url
-        }
-    };
+    let (manifest_url, playlist_base_url, parsed) =
+        match hls_playlist::resolve_master_variant(&manifest_bytes, &base_url).map_err(|e| e.to_string())? {
+            Some(variant_url) => {
+                let variant_resp = crate::http_retry::send_with_retry(|| http.0.get(&variant_url))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let variant_base_url = variant_resp.url().clone();
+                let variant_bytes = variant_resp.bytes().await.map_err(|e| e.to_string())?;
+                let parsed = hls_playlist::parse_media_playlist(&variant_bytes).map_err(|e| e.to_string())?;
+                (variant_url, variant_base_url, parsed)
+            }
+            None => {
+                let parsed = hls_playlist::parse_media_playlist(&manifest_bytes).map_err(|e| e.to_string())?;
+                (manifest_url, base_url, parsed)
+            }
+        };
+
+    // Streams fMP4/CMAF (a diferencia de MPEG-TS clásico) declaran un
+    // segmento de inicialización aparte (EXT-X-MAP) — sin escribirlo antes
+    // que los fragmentos, el archivo queda con moof/mdat pero sin el
+    // moov/ftyp que los hace interpretables (confirmado en vivo con
+    // ffprobe: "trun track id unknown, no tfhd was found").
+    let init_segment_url = parsed
+        .init_segment
+        .as_ref()
+        .map(|m| -> Result<_, String> {
+            let resolved = playlist_base_url.join(&m.uri).map_err(|e| e.to_string())?;
+            Ok((resolved.to_string(), m.byte_range))
+        })
+        .transpose()?;
 
     let id = uuid::Uuid::new_v4().to_string();
     let file_name = format!("{id}.ts");
@@ -211,7 +223,16 @@ pub async fn start_recording(
     let task_id = id.clone();
     let task_manifest_url = manifest_url.clone();
     tokio::spawn(async move {
-        recording_loop(task_app, task_client, task_id, task_manifest_url, stop_flag, max_duration_minutes).await;
+        recording_loop(
+            task_app,
+            task_client,
+            task_id,
+            task_manifest_url,
+            stop_flag,
+            max_duration_minutes,
+            init_segment_url,
+        )
+        .await;
     });
 
     Ok(RecordingInfo {
@@ -348,6 +369,7 @@ async fn recording_loop(
     manifest_url: String,
     stop_flag: Arc<AtomicBool>,
     max_duration_minutes: Option<u32>,
+    init_segment_url: Option<(String, Option<(u64, u64)>)>,
 ) {
     // Tope de duración real (determinístico, no depende de que el usuario
     // mire la pantalla) — evita que una grabación quede corriendo para
@@ -372,6 +394,34 @@ async fn recording_loop(
 
     let mut seen = HashSet::new();
     let mut total_bytes: i64 = 0;
+
+    if let Some((url, byte_range)) = init_segment_url {
+        let build = || {
+            let req = client.get(&url);
+            match byte_range {
+                Some((offset, length)) => {
+                    req.header("Range", format!("bytes={offset}-{}", offset + length - 1))
+                }
+                None => req,
+            }
+        };
+        match crate::http_retry::send_with_retry(build).await {
+            Ok(resp) => match resp.bytes().await {
+                Ok(bytes) => {
+                    if let Err(e) = file.write_all(&bytes).await {
+                        return finish(&app, &id, RecordingEnd::Error(format!("no se pudo escribir el init segment: {e}"))).await;
+                    }
+                    total_bytes += bytes.len() as i64;
+                }
+                Err(e) => {
+                    return finish(&app, &id, RecordingEnd::Error(format!("no se pudo leer el init segment {url}: {e}"))).await;
+                }
+            },
+            Err(e) => {
+                return finish(&app, &id, RecordingEnd::Error(format!("no se pudo descargar el init segment {url}: {e}"))).await;
+            }
+        }
+    }
 
     loop {
         if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
