@@ -6,14 +6,8 @@ use async_trait::async_trait;
 use librqbit::api::TorrentIdOrHash;
 use librqbit::{AddTorrent, AddTorrentOptions, Session, TorrentStatsState};
 
+use super::stream_server::{HttpFallbackMap, LocalFileEntry, LocalFileMap};
 use super::{AddTorrentSource, TorrentEngine, TorrentInfo};
-
-pub type HttpFallbackMap = Arc<Mutex<HashMap<String, String>>>;
-/// Token opaco -> path real en disco (biblioteca Local, ver
-/// `TorrentEngine::local_stream_url`). Mismo shape que `HttpFallbackMap`
-/// (mapa en memoria, sin persistencia) por la misma razón: nunca se expone
-/// el path crudo en la URL que llega al frontend.
-pub type LocalFileMap = Arc<Mutex<HashMap<String, std::path::PathBuf>>>;
 
 /// Default TorrentEngine: librqbit embedded directly as a Rust dependency,
 /// no sidecar process, no HTTP API of its own exposed. This is the engine
@@ -27,23 +21,57 @@ pub struct EmbeddedRqbit {
     downloads_dir: std::path::PathBuf,
 }
 
+/// Crea la sesión real de librqbit, separada de `EmbeddedRqbit::new` porque
+/// el servidor de streaming compartido (`stream_server::spawn`) necesita
+/// esta sesión ya creada para exponer `/stream/*` (P2P en vivo) — y a su vez
+/// `EmbeddedRqbit` necesita el puerto que devuelve `spawn`. Orden real en
+/// `lib.rs::setup`: `create_session` -> `stream_server::spawn(Some(session))`
+/// -> `EmbeddedRqbit::new(session, puerto, ...)`.
+pub async fn create_session(download_dir: std::path::PathBuf) -> anyhow::Result<Arc<Session>> {
+    Session::new(download_dir)
+        .await
+        .context("no se pudo iniciar la sesión de librqbit")
+}
+
 impl EmbeddedRqbit {
-    pub async fn new(download_dir: std::path::PathBuf) -> anyhow::Result<Self> {
-        let session = Session::new(download_dir.clone())
-            .await
-            .context("no se pudo iniciar la sesión de librqbit")?;
-        let http_fallback: HttpFallbackMap = Arc::new(Mutex::new(HashMap::new()));
-        let local_files: LocalFileMap = Arc::new(Mutex::new(HashMap::new()));
-        let stream_port = super::stream_server::spawn(session.clone(), http_fallback.clone(), local_files.clone())
-            .await
-            .context("no se pudo levantar el servidor de streaming local")?;
-        Ok(Self {
+    /// `session` ya fue creada vía `create_session`; `stream_port`/
+    /// `http_fallback`/`local_files` vienen del servidor de streaming ya
+    /// levantado con esa misma sesión — no lo spawnea este constructor,
+    /// porque el servidor es compartido entre cualquier motor activo (ver
+    /// `engine::stream_server::spawn`), no exclusivo de `EmbeddedRqbit`.
+    pub fn new(
+        session: Arc<Session>,
+        download_dir: std::path::PathBuf,
+        stream_port: u16,
+        http_fallback: HttpFallbackMap,
+        local_files: LocalFileMap,
+    ) -> Self {
+        Self {
             session,
             stream_port,
             http_fallback,
             local_files,
             downloads_dir: download_dir,
-        })
+        }
+    }
+
+    /// Conveniencia para tests/usos aislados: encadena `create_session` ->
+    /// `stream_server::spawn` -> `new` con mapas frescos, en vez de que cada
+    /// caller repita las tres llamadas. `lib.rs::setup` NO usa esto porque
+    /// ahí el servidor y los mapas se comparten con el motor externo que
+    /// pueda estar activo.
+    pub async fn new_standalone(download_dir: std::path::PathBuf) -> anyhow::Result<Self> {
+        let session = create_session(download_dir.clone()).await?;
+        let http_fallback: HttpFallbackMap = Arc::new(Mutex::new(HashMap::new()));
+        let local_files: LocalFileMap = Arc::new(Mutex::new(HashMap::new()));
+        let stream_port = super::stream_server::spawn(
+            Some(session.clone()),
+            http_fallback.clone(),
+            local_files.clone(),
+        )
+        .await
+        .context("no se pudo levantar el servidor de streaming local")?;
+        Ok(Self::new(session, download_dir, stream_port, http_fallback, local_files))
     }
 }
 
@@ -78,6 +106,28 @@ impl EmbeddedRqbit {
 impl TorrentEngine for EmbeddedRqbit {
     async fn add(&self, source: AddTorrentSource) -> anyhow::Result<TorrentInfo> {
         self.add_internal(source, None).await
+    }
+
+    async fn add_with_limits(
+        &self,
+        source: AddTorrentSource,
+        download_bps: Option<u32>,
+        upload_bps: Option<u32>,
+    ) -> anyhow::Result<TorrentInfo> {
+        if download_bps.is_none() && upload_bps.is_none() {
+            return self.add_internal(source, None).await;
+        }
+        self.add_internal(
+            source,
+            Some(AddTorrentOptions {
+                ratelimits: librqbit::limits::LimitsConfig {
+                    upload_bps: upload_bps.and_then(std::num::NonZeroU32::new),
+                    download_bps: download_bps.and_then(std::num::NonZeroU32::new),
+                },
+                ..Default::default()
+            }),
+        )
+        .await
     }
 
     /// Sembrado real (ver commands::seed_archive_org_item_core): el archivo
@@ -155,12 +205,28 @@ impl TorrentEngine for EmbeddedRqbit {
 
     async fn local_stream_url(&self, path: std::path::PathBuf) -> anyhow::Result<String> {
         let token = uuid::Uuid::new_v4().to_string();
-        self.local_files.lock().unwrap().insert(token.clone(), path);
+        self.local_files
+            .lock()
+            .unwrap()
+            .insert(token.clone(), LocalFileEntry { path, probe: None });
         Ok(format!("http://127.0.0.1:{}/local/{token}", self.stream_port))
     }
 
     fn downloads_dir(&self) -> Option<&std::path::Path> {
         Some(&self.downloads_dir)
+    }
+
+    async fn file_path(&self, id: &str, file_idx: usize) -> anyhow::Result<std::path::PathBuf> {
+        let handle = self.get_handle(id)?;
+        let metadata = handle.metadata.load();
+        let metadata = metadata
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("torrent sin metadata todavía (magnet resolviendo)"))?;
+        let file_info = metadata
+            .file_infos
+            .get(file_idx)
+            .ok_or_else(|| anyhow::anyhow!("file_idx {file_idx} fuera de rango"))?;
+        Ok(self.downloads_dir.join(&file_info.relative_filename))
     }
 }
 
@@ -197,7 +263,7 @@ mod e2e {
                 ocurre en la app real, que solo abre una sesión)"]
     async fn add_real_archive_org_torrent_and_stream_it() {
         let tmp = tempdir();
-        let engine = EmbeddedRqbit::new(tmp.clone()).await.expect("crear sesión");
+        let engine = EmbeddedRqbit::new_standalone(tmp.clone()).await.expect("crear sesión");
 
         let http = reqwest::Client::new();
         let torrent_bytes = archive_org::fetch_torrent_bytes(&http, "turner_video_444")
@@ -266,7 +332,7 @@ mod e2e {
     #[ignore = "red real, no apto para CI por defecto; correr manualmente para diagnosticar bug #18"]
     async fn streams_full_file_in_sequential_ranges_like_a_real_player() {
         let tmp = tempdir();
-        let engine = EmbeddedRqbit::new(tmp.clone()).await.expect("crear sesión");
+        let engine = EmbeddedRqbit::new_standalone(tmp.clone()).await.expect("crear sesión");
 
         let http = reqwest::Client::new();
         let torrent_bytes = archive_org::fetch_torrent_bytes(&http, "turner_video_444")
@@ -362,7 +428,7 @@ mod e2e {
     #[ignore = "red real + swarm BitTorrent real, no apto para CI por defecto"]
     async fn control_ubuntu_torrent_gets_real_peers() {
         let tmp = tempdir();
-        let engine = EmbeddedRqbit::new(tmp.clone()).await.expect("crear sesión");
+        let engine = EmbeddedRqbit::new_standalone(tmp.clone()).await.expect("crear sesión");
 
         let http = reqwest::Client::new();
         let torrent_bytes = http

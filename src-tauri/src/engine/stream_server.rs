@@ -14,11 +14,45 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use tower_http::cors::CorsLayer;
 
-use super::embedded_rqbit::{HttpFallbackMap, LocalFileMap};
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+/// Token opaco -> URL de fallback HTTP registrada (ver
+/// `TorrentEngine::register_http_fallback`). Solo `EmbeddedRqbit` la usa
+/// hoy; motores externos la dejan vacía (su cliente ya resuelve sus propias
+/// fuentes).
+pub type HttpFallbackMap = Arc<Mutex<HashMap<String, String>>>;
+/// Token opaco -> archivo real en disco (biblioteca Local, o archivo de un
+/// torrent ya descargado/en descarga por un motor externo — ver
+/// `TorrentEngine::local_stream_url`/`stream_url`). Nunca se expone el path
+/// crudo en la URL que llega al frontend.
+pub type LocalFileMap = Arc<Mutex<HashMap<String, LocalFileEntry>>>;
+
+#[derive(Clone)]
+pub struct LocalFileEntry {
+    pub path: std::path::PathBuf,
+    /// `None` = comportamiento actual exacto (Biblioteca Local, archivo ya
+    /// completo, sin poll). `Some` = el archivo puede tener bytes finales
+    /// (piezas) todavía sin escribir más allá del punto que devuelve el
+    /// probe — ver `ExternalQbittorrent::stream_url`.
+    pub probe: Option<Arc<dyn ReadinessProbe>>,
+}
+
+/// Cuánto de un archivo es seguro leer desde el byte 0 sin tocar datos que
+/// el swarm todavía no escribió a disco — implementado por motores externos
+/// sin piece-awareness nativa (ver `QbitFileProbe`). `EmbeddedRqbit` no lo
+/// necesita: su `/stream/*` ya espera cada pieza vía `handle.stream()`.
+#[async_trait::async_trait]
+pub trait ReadinessProbe: Send + Sync {
+    async fn ready_bytes(&self) -> u64;
+}
 
 #[derive(Clone)]
 struct AppState {
-    session: Arc<Session>,
+    // `None` cuando el motor activo no es `EmbeddedRqbit` — el servidor se
+    // levanta una sola vez en `lib.rs::setup` independiente de qué motor
+    // esté activo, así que no siempre hay una sesión de librqbit real.
+    session: Option<Arc<Session>>,
     http_fallback: HttpFallbackMap,
     local_files: LocalFileMap,
     http_client: reqwest::Client,
@@ -31,8 +65,11 @@ struct AppState {
 /// HTTP source when one was registered as a fallback (see
 /// TorrentEngine::register_http_fallback) — same Range semantics either way,
 /// so the frontend never needs to know which path served a given torrent.
+/// Se levanta una sola vez desde `lib.rs::setup`, independiente del motor
+/// activo — `/stream/*` (P2P en vivo) solo funciona con `session: Some(_)`
+/// (EmbeddedRqbit); `/local/*` y `/proxy/*` no dependen de librqbit.
 pub async fn spawn(
-    session: Arc<Session>,
+    session: Option<Arc<Session>>,
     http_fallback: HttpFallbackMap,
     local_files: LocalFileMap,
 ) -> anyhow::Result<u16> {
@@ -96,15 +133,47 @@ fn resolve_range(headers: &HeaderMap, total: u64) -> Result<(u64, u64, StatusCod
     Ok((start, end, status))
 }
 
+/// Adivina el MIME real por extensión del nombre del torrent — sin esto,
+/// WebKitGTK recibe `application/octet-stream` y directamente no intenta
+/// reproducir contenedores que no reconoce de entrada (Matroska/.mkv,
+/// confirmado en vivo: MEDIA_ERR_SRC_NOT_SUPPORTED pese a que el sistema sí
+/// tiene el demuxer de GStreamer instalado — WebKit decide si intentar
+/// según el Content-Type declarado, no solo el contenido). Prueba barata
+/// antes de encarar remux real: si esto alcanza, no hace falta.
+/// Limitación honesta: `handle.name()` es el nombre del torrent, no del
+/// archivo específico en `file_idx` — correcto para el caso común de un
+/// solo archivo de video, puede errar en un torrent multi-archivo.
+fn guess_content_type(torrent_name: Option<&str>) -> &'static str {
+    let lower = torrent_name.unwrap_or_default().to_lowercase();
+    if lower.ends_with(".mkv") {
+        "video/x-matroska"
+    } else if lower.ends_with(".mp4") || lower.ends_with(".m4v") {
+        "video/mp4"
+    } else if lower.ends_with(".webm") {
+        "video/webm"
+    } else if lower.ends_with(".avi") {
+        "video/x-msvideo"
+    } else {
+        "application/octet-stream"
+    }
+}
+
 async fn stream_handler(
     State(state): State<AppState>,
     Path((torrent_id, file_idx)): Path<(usize, usize)>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(handle) = state.session.get(TorrentIdOrHash::Id(torrent_id)) else {
+    let Some(session) = state.session.as_ref() else {
+        eprintln!("[popcorn] stream_handler 404: motor embebido no activo, sin sesión de librqbit");
+        return (StatusCode::NOT_FOUND, "motor embebido no activo").into_response();
+    };
+    let Some(handle) = session.get(TorrentIdOrHash::Id(torrent_id)) else {
         eprintln!("[popcorn] stream_handler 404: torrent={torrent_id} no encontrado en la sesión");
         return (StatusCode::NOT_FOUND, "torrent not found").into_response();
     };
+    // handle.stream() abajo consume el Arc (toma self por valor, no &self)
+    // — el nombre hay que sacarlo antes de perder acceso a handle.
+    let content_type = guess_content_type(handle.name().as_deref());
 
     let mut file_stream = match handle.stream(file_idx) {
         Ok(s) => s,
@@ -136,7 +205,7 @@ async fn stream_handler(
 
     let mut response = Response::builder()
         .status(status)
-        .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+        .header(axum::http::header::CONTENT_TYPE, content_type)
         .header(axum::http::header::ACCEPT_RANGES, "bytes")
         .header(axum::http::header::CONTENT_LENGTH, content_length);
 
@@ -223,19 +292,32 @@ async fn proxy_handler(
     response.body(body).unwrap().into_response()
 }
 
+/// Tope de espera por datos todavía no llegados del swarm externo (ver
+/// `ReadinessProbe`) y cada cuánto se reconsulta mientras se espera — mismo
+/// espíritu que el bloqueo de `handle.stream()` en `EmbeddedRqbit`, pero con
+/// timeout explícito porque acá no hay garantía de que el swarm externo
+/// vaya a entregar la pieza (a diferencia del proceso propio).
+const READINESS_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const READINESS_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+
 /// Sirve un archivo de la biblioteca Local con soporte de Range, misma
 /// semántica que `stream_handler` pero leyendo de `tokio::fs::File` en vez
 /// de un handle de librqbit. `token` es opaco (ver `LocalFileMap`) — nunca
-/// se expone el path real en la URL que llega al frontend.
+/// se expone el path real en la URL que llega al frontend. Si el registro
+/// trae un `probe` (motor externo sirviendo un archivo aún en descarga),
+/// espera a que el rango pedido esté realmente escrito antes de leerlo —
+/// sin esto, leer piezas rarest-first como si fueran contiguas produce
+/// bytes corruptos (bug real confirmado en vivo, ver plan de este cambio).
 async fn local_stream_handler(
     State(state): State<AppState>,
     Path(token): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(path) = state.local_files.lock().unwrap().get(&token).cloned() else {
+    let Some(entry) = state.local_files.lock().unwrap().get(&token).cloned() else {
         eprintln!("[popcorn] local_stream_handler 404: token={token} sin archivo registrado");
         return (StatusCode::NOT_FOUND, "archivo local no encontrado").into_response();
     };
+    let path = entry.path;
 
     let mut file = match tokio::fs::File::open(&path).await {
         Ok(f) => f,
@@ -253,7 +335,7 @@ async fn local_stream_handler(
         }
     };
 
-    let (start, end, status) = match resolve_range(&headers, total) {
+    let (start, mut end, mut status) = match resolve_range(&headers, total) {
         Ok(v) => v,
         Err(resp) => {
             eprintln!("[popcorn] local_stream_handler 416: path={} total={total}", path.display());
@@ -261,18 +343,56 @@ async fn local_stream_handler(
         }
     };
 
+    if let Some(probe) = entry.probe.as_ref() {
+        let deadline = tokio::time::Instant::now() + READINESS_POLL_TIMEOUT;
+        loop {
+            let ready = probe.ready_bytes().await;
+            if ready > end {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                if ready <= start {
+                    eprintln!(
+                        "[popcorn] local_stream_handler 503: path={} token={token} swarm no entregó \
+                         datos suficientes (ready={ready} start={start})",
+                        path.display()
+                    );
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "todavía no llegan suficientes datos del swarm — puede estar sin peers",
+                    )
+                        .into_response();
+                }
+                // Servir lo que haya, nunca más allá de `ready_bytes` (evita
+                // el bug original de leer huecos rarest-first como si fueran
+                // contiguos) — status pasa a 206 aunque el pedido original
+                // fuera sin Range, porque el cuerpo servido es menor que
+                // `total` y hace falta declarar el rango real vía
+                // Content-Range.
+                end = ready - 1;
+                status = StatusCode::PARTIAL_CONTENT;
+                break;
+            }
+            tokio::time::sleep(READINESS_POLL_INTERVAL).await;
+        }
+    }
+
     if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
         eprintln!("[popcorn] local_stream_handler 500: path={} seek_error={e}", path.display());
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
 
+    // A diferencia de stream_handler (que solo tiene el nombre del
+    // torrent, no del archivo específico), acá el path real ya apunta al
+    // archivo exacto — extensión confiable al 100%, no una adivinanza.
+    let content_type = guess_content_type(path.file_name().and_then(|n| n.to_str()));
     let content_length = end - start + 1;
     let limited = AsyncReadExt::take(file, content_length);
     let body = Body::from_stream(ReaderStream::new(limited));
 
     let mut response = Response::builder()
         .status(status)
-        .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+        .header(axum::http::header::CONTENT_TYPE, content_type)
         .header(axum::http::header::ACCEPT_RANGES, "bytes")
         .header(axum::http::header::CONTENT_LENGTH, content_length);
 
