@@ -2,8 +2,9 @@ use rusqlite::OptionalExtension;
 use serde::Serialize;
 use tauri::State;
 
-use super::{gemini::GeminiProvider, keychain, openai_compatible::OpenAiCompatibleProvider, AiProvider, StructuredQuery};
+use super::{gemini::GeminiProvider, openai_compatible::OpenAiCompatibleProvider, AiProvider, StructuredQuery};
 use crate::db::Db;
+use crate::keychain;
 
 #[derive(Serialize, Clone)]
 pub struct AiProviderConfig {
@@ -19,7 +20,7 @@ pub struct AiProviderConfig {
 
 fn row_to_config(row: &rusqlite::Row) -> rusqlite::Result<AiProviderConfig> {
     let id: String = row.get(0)?;
-    let has_api_key = keychain::get_api_key(&id).ok().flatten().is_some();
+    let has_api_key = keychain::get_secret(&id).ok().flatten().is_some();
     Ok(AiProviderConfig {
         id,
         kind: row.get(1)?,
@@ -69,10 +70,10 @@ pub async fn add_ai_provider(
         .map_err(|e| e.to_string())?;
     }
     if let Some(key) = api_key.as_ref().filter(|k| !k.is_empty()) {
-        keychain::set_api_key(&id, key).map_err(|e| e.to_string())?;
+        keychain::set_secret(&id, key).map_err(|e| e.to_string())?;
     }
     Ok(AiProviderConfig {
-        has_api_key: keychain::get_api_key(&id).ok().flatten().is_some(),
+        has_api_key: keychain::get_secret(&id).ok().flatten().is_some(),
         id,
         kind,
         label,
@@ -89,7 +90,7 @@ pub async fn remove_ai_provider(db: State<'_, Db>, id: String) -> Result<(), Str
         conn.execute("DELETE FROM ai_providers WHERE id = ?1", [&id])
             .map_err(|e| e.to_string())?;
     }
-    keychain::delete_api_key(&id).map_err(|e| e.to_string())?;
+    keychain::delete_secret(&id).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -155,7 +156,7 @@ pub(crate) fn try_build_active_provider(db: &Db) -> Result<Option<Box<dyn AiProv
     let Some((id, kind, model, base_url)) = row else {
         return Ok(None);
     };
-    let api_key = keychain::get_api_key(&id).map_err(|e| e.to_string())?;
+    let api_key = keychain::get_secret(&id).map_err(|e| e.to_string())?;
     build_provider(&kind, model, base_url, api_key)
         .map(Some)
         .map_err(|e| e.to_string())
