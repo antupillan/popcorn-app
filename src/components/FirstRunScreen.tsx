@@ -1,3 +1,5 @@
+import { BITTORRENT_SHARING_NOTICE } from "../lib/legalText";
+
 interface FirstRunScreenProps {
   onAccept: () => void;
 }
@@ -12,7 +14,7 @@ export function FirstRunScreen({ onAccept }: FirstRunScreenProps) {
         </p>
 
         <section className="mt-5 space-y-2">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-sky-400">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--accent-fg)]">
             Qué es y qué no es
           </h2>
           <p className="text-xs leading-relaxed text-zinc-300">
@@ -25,7 +27,7 @@ export function FirstRunScreen({ onAccept }: FirstRunScreenProps) {
         </section>
 
         <section className="mt-4 space-y-2">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-sky-400">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--accent-fg)]">
             Uso aceptable
           </h2>
           <ul className="list-inside list-disc space-y-1 text-xs leading-relaxed text-zinc-300">
@@ -39,6 +41,13 @@ export function FirstRunScreen({ onAccept }: FirstRunScreenProps) {
               el software no cura ni recomienda ningún indexer de contenido con copyright.
             </li>
           </ul>
+        </section>
+
+        <section className="mt-4 space-y-2">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--accent-fg)]">
+            Compartir vía BitTorrent
+          </h2>
+          <p className="text-xs leading-relaxed text-zinc-300">{BITTORRENT_SHARING_NOTICE}</p>
         </section>
 
         <section className="mt-4 rounded-lg border border-amber-900/50 bg-amber-950/20 p-3">
@@ -64,7 +73,7 @@ export function FirstRunScreen({ onAccept }: FirstRunScreenProps) {
 
         <button
           onClick={onAccept}
-          className="mt-6 w-full rounded-lg bg-sky-600 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-sky-500"
+          className="mt-6 w-full rounded-lg bg-[var(--accent)] py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[var(--accent-hover)]"
         >
           Entendido, continuar
         </button>
