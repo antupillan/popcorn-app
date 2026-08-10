@@ -1,12 +1,16 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 
-export type View = "biblioteca" | "torrents";
+// Un solo valor hoy — Torrents pasó a flyout del TopBar y Ajustes a panel
+// flotante (ninguno de los dos es una "vista" que reemplace <main>). Se deja
+// como union (no un literal suelto) porque Fase 3 suma una vista real
+// (Comunidades) y este es el punto de extensión.
+export type View = "biblioteca";
 
 interface SidebarProps {
   active: View;
   onSelect: (view: View) => void;
-  torrentCount: number;
+  onOpenAjustes: () => void;
 }
 
 interface NavItemProps {
@@ -32,11 +36,11 @@ function NavItem({ label, icon, isActive, isCollapsed, badge, onClick }: NavItem
       }`}
     >
       <span className="flex items-center gap-2.5">
-        <span className={isActive ? "text-sky-600 dark:text-sky-400" : "opacity-70"}>{icon}</span>
+        <span className={isActive ? "text-[var(--accent)] dark:text-[var(--accent-fg)]" : "opacity-70"}>{icon}</span>
         {!isCollapsed && <span>{label}</span>}
       </span>
       {!isCollapsed && badge !== undefined && badge > 0 && (
-        <span className="rounded-full bg-sky-600/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-sky-600 dark:text-sky-400">
+        <span className="rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--accent)] dark:text-[var(--accent-fg)]">
           {badge}
         </span>
       )}
@@ -54,13 +58,14 @@ const LibraryIcon = () => (
   </svg>
 );
 
-const TorrentIcon = () => (
+const SettingsIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-4 w-4">
-    <path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
   </svg>
 );
 
-export function Sidebar({ active, onSelect, torrentCount }: SidebarProps) {
+export function Sidebar({ active, onSelect, onOpenAjustes }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
 
   return (
@@ -94,15 +99,17 @@ export function Sidebar({ active, onSelect, torrentCount }: SidebarProps) {
           isCollapsed={isCollapsed}
           onClick={() => onSelect("biblioteca")}
         />
-        <NavItem
-          label="Torrents"
-          icon={<TorrentIcon />}
-          isActive={active === "torrents"}
-          isCollapsed={isCollapsed}
-          badge={torrentCount}
-          onClick={() => onSelect("torrents")}
-        />
       </nav>
+
+      <div className="border-t border-zinc-200 p-2 dark:border-zinc-800">
+        <NavItem
+          label="Ajustes"
+          icon={<SettingsIcon />}
+          isActive={false}
+          isCollapsed={isCollapsed}
+          onClick={onOpenAjustes}
+        />
+      </div>
     </aside>
   );
 }
