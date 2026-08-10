@@ -1,5 +1,7 @@
 pub mod embedded_rqbit;
-mod stream_server;
+pub mod external_qbittorrent;
+pub(crate) mod remux;
+pub(crate) mod stream_server;
 
 use async_trait::async_trait;
 use serde::Serialize;
@@ -38,6 +40,23 @@ pub struct TorrentInfo {
 #[async_trait]
 pub trait TorrentEngine: Send + Sync {
     async fn add(&self, source: AddTorrentSource) -> anyhow::Result<TorrentInfo>;
+
+    /// Como `add`, pero acotando velocidad de bajada/subida (bytes/seg,
+    /// `None` = sin límite) — usado por el límite global configurable en
+    /// Ajustes (`app_settings::get_speed_limits`). Solo aplica al torrent
+    /// que se agrega en este momento: no hay forma de reconfigurar en
+    /// caliente uno ya agregado (confirmado leyendo `librqbit` 8.1.1 — el
+    /// setter del rate limiter existe pero es privado al crate). Delega a
+    /// `add` por defecto para motores que no distinguen el caso.
+    async fn add_with_limits(
+        &self,
+        source: AddTorrentSource,
+        download_bps: Option<u32>,
+        upload_bps: Option<u32>,
+    ) -> anyhow::Result<TorrentInfo> {
+        let _ = (download_bps, upload_bps);
+        self.add(source).await
+    }
 
     /// Como `add`, pero para cuando el archivo completo ya se colocó a mano
     /// en el destino antes de llamar (sembrado real, ver
@@ -100,10 +119,24 @@ pub trait TorrentEngine: Send + Sync {
     /// Carpeta de descargas real del motor — necesaria para colocar bytes
     /// en el lugar exacto que espera un `.torrent` antes de agregarlo (ver
     /// sembrado real de archive.org, `commands::seed_archive_org_item_core`).
-    /// `None` por defecto; `EmbeddedRqbit` la expone porque ya la recibe en
-    /// `new()`. Misma nota honesta de acoplamiento que `local_stream_url`:
-    /// un futuro `ExternalQbittorrent`/`ExternalTransmission` no la tendría.
+    /// `None` por defecto. `EmbeddedRqbit` la expone porque ya la recibe en
+    /// `new()`; `ExternalQbittorrent` la cachea al conectar (`app/defaultSavePath`,
+    /// una sola vez — best-effort si autoTMM cambia el save path real por
+    /// torrent/categoría, no se recalcula en cada llamada porque este método
+    /// es sync y consultarlo de nuevo requeriría una llamada de red).
     fn downloads_dir(&self) -> Option<&std::path::Path> {
         None
+    }
+
+    /// Ruta real en disco de un archivo dentro de un torrent — necesaria
+    /// para remuxear (ver `engine::remux`), que opera sobre el archivo ya
+    /// descargado, no sobre el stream P2P. Error por defecto. Async (a
+    /// diferencia de `downloads_dir`) porque `ExternalQbittorrent` necesita
+    /// una llamada de red real (`torrents/properties` + `torrents/files`)
+    /// para resolverla — `EmbeddedRqbit` la resuelve en memoria (sin I/O)
+    /// pero igual expone el método como async para cumplir un único
+    /// contrato de trait.
+    async fn file_path(&self, _id: &str, _file_idx: usize) -> anyhow::Result<std::path::PathBuf> {
+        anyhow::bail!("el motor activo no expone rutas de archivo (requiere EmbeddedRqbit o ExternalQbittorrent)")
     }
 }

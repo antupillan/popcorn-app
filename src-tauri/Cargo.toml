@@ -2,8 +2,9 @@
 name = "popcorn-app"
 version = "0.1.0"
 description = "A Tauri App"
-authors = ["you"]
+authors = ["Samuel Paredes"]
 edition = "2021"
+license = "AGPL-3.0-or-later"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -46,7 +47,9 @@ tokio-util = { version = "0.7", features = ["io"] }
 regex = "1"
 urlencoding = "2"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# "sync" agregado para tokio::sync::Semaphore (ver availability_ping.rs,
+# acota la concurrencia del ping de disponibilidad de curación).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 anyhow = "1"
 # Pinned to 0.39: 0.40 pulls libsqlite3-sys 0.38, whose build.rs uses the
 # unstable `cfg_select!` macro and fails on rustc 1.91 (stable). Bump once
@@ -57,10 +60,42 @@ rusqlite = { version = "=0.39.0", features = ["bundled"] }
 # nativo. Verificado en crates.io antes de fijar versión: activamente
 # mantenido (última publicación 2026-07-30), 1.4M+ descargas.
 m3u8-rs = "6.0.1"
+# Remux MKV->MP4 sin recodificar, para reproducir en WebViews que no
+# soportan Matroska nativamente (WebKitGTK confirmado en vivo esta
+# sesión — MEDIA_ERR_SRC_NOT_SUPPORTED pese a que el sistema sí puede
+# decodificar el mismo stream por otra vía). Pure-Rust, sin binario
+# externo (ffmpeg descartado a propósito, ver plan — Mandato de un solo
+# binario). Ambas verificadas en crates.io antes de fijar versión.
+# matroska-demuxer: activamente mantenido, 120K+ descargas.
+matroska-demuxer = "0.8.1"
+# mp4: muy establecida, 11.9M+ descargas.
+mp4 = "0.14.0"
+# Cliente para la Web API de qBittorrent (ExternalQbittorrent, ver plan
+# "motor_externo_qbittorrent"). Verificado en crates.io antes de fijar
+# versión: activamente mantenido, 1.6M+ descargas — mucho más maduro que
+# la alternativa evaluada (transmission-rpc, ~53K descargas), motivo por
+# el que qBittorrent se eligió como primer motor externo.
+qbit-rs = "0.6.0"
+# Requerido para construir el tipo `Url` que pide qbit-rs al agregar un
+# torrent por magnet/URL (`TorrentSource::Urls`) — ya es dependencia
+# transitiva de reqwest, se suma directa por el mismo criterio que
+# librqbit-core/buffers arriba.
+url = "2"
+
+# Solo Linux: el acento de color viene del portal freedesktop
+# (org.freedesktop.portal.Settings), que no existe en Windows/macOS — así
+# no infla esos builds. Verificado en crates.io antes de fijar versión:
+# activamente mantenido (última publicación 2026-07-17), 12M+ descargas.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", features = ["settings"] }
 
 [dev-dependencies]
 # Solo para construir fixtures de .torrent reales en tests (armar la
 # estructura con los structs reales de librqbit-core y serializarla, en
 # vez de escribir bencode a mano — evita errores de conteo de bytes).
 bencode = { package = "librqbit-bencode", version = "3.1.0" }
+# Servidor HTTP mock para tests de availability_ping.rs (ping_ok/ping_many)
+# sin red real. Verificado en crates.io antes de fijar versión: activamente
+# mantenido (última publicación 2026-02-02), 52M+ descargas.
+mockito = "1.7.2"
 

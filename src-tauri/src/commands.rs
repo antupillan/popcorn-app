@@ -13,6 +13,27 @@ use crate::sources::public_domain_torrents;
 pub struct EngineState(pub Arc<dyn TorrentEngine>);
 pub struct HttpClient(pub reqwest::Client);
 
+/// `Some(mensaje)` cuando `lib.rs::setup` no pudo conectar al motor externo
+/// configurado y cayó a `EmbeddedRqbit` — el frontend lo consulta una vez al
+/// montar y lo muestra como aviso visible (nunca un fallback silencioso,
+/// Mandato 1). `None` en el caso normal (motor embebido por elección, o
+/// motor externo que sí conectó).
+pub struct EngineFallbackWarning(pub Option<String>);
+
+#[tauri::command]
+pub async fn get_engine_fallback_warning(
+    warning: State<'_, EngineFallbackWarning>,
+) -> Result<Option<String>, String> {
+    Ok(warning.0.clone())
+}
+
+/// Para el layout de TitleBar.tsx (semáforo macOS vs. controles a la
+/// derecha en cualquier otro SO) — constante de compilación, sin plugin.
+#[tauri::command]
+pub fn get_os() -> &'static str {
+    std::env::consts::OS
+}
+
 /// Tope de subida del sembrado automático: 1 Mbps en bytes/seg (librqbit
 /// opera en bytes, no bits). Fijo hasta que Etapa 2 lo vuelva ajustable.
 pub(crate) const DEFAULT_SEED_UPLOAD_BPS: u32 = 1_000_000 / 8;
@@ -60,6 +81,47 @@ pub async fn list_media_items(db: State<'_, Db>) -> Result<Vec<MediaItem>, Strin
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// Borra un ítem de Mi Colección y su torrent/archivos asociados (mismo
+/// `delete_files: true` que "Quitar" en la lista de Torrents). Si el motor
+/// ya perdió la sesión del torrent (reinicio de la app, ver bug #26), el
+/// error se ignora — el objetivo es que el ítem desaparezca de la
+/// biblioteca igual, no bloquear el borrado por un torrent ya inexistente.
+#[tauri::command]
+pub async fn remove_media_item(
+    engine: State<'_, EngineState>,
+    db: State<'_, Db>,
+    id: String,
+) -> Result<(), String> {
+    let engine_torrent_id: Option<String> = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT engine_torrent_id FROM media_items WHERE id = ?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten()
+    };
+    if let Some(torrent_id) = engine_torrent_id {
+        if let Err(e) = engine.0.remove(&torrent_id, true).await {
+            eprintln!("[popcorn] no se pudo quitar el torrent {torrent_id} de {id}, se borra igual de la biblioteca: {e}");
+        }
+    }
+    // Sin fallar si no hay .mp4 remuxeado cacheado para este ítem (no todo
+    // ítem removido pasó por remux, ver resolve_remuxed_stream_url) — es
+    // un archivo derivado, 100% reconstruible del original, nunca se
+    // siembra ni se anuncia al swarm (ver plan).
+    if let Some(downloads_dir) = engine.0.downloads_dir() {
+        let cached = crate::engine::remux::cache_path(downloads_dir, &id);
+        std::fs::remove_file(&cached).ok();
+    }
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM media_items WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Agrega un torrent a partir de bytes de archivo .torrent subidos por el
 /// usuario (tab "Subir .torrent" del modal unificado) — no crea fila en
 /// media_items porque no hay metadata de catálogo asociada, a diferencia
@@ -67,25 +129,58 @@ pub async fn list_media_items(db: State<'_, Db>) -> Result<Vec<MediaItem>, Strin
 #[tauri::command]
 pub async fn add_torrent_file(
     engine: State<'_, EngineState>,
+    db: State<'_, Db>,
     bytes: Vec<u8>,
 ) -> Result<TorrentInfo, String> {
+    let (download_bps, upload_bps) = crate::app_settings::read_speed_limits_bps(&db)?;
     engine
         .0
-        .add(AddTorrentSource::TorrentBytes(bytes))
+        .add_with_limits(AddTorrentSource::TorrentBytes(bytes), download_bps, upload_bps)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// A diferencia de `add_torrent_file` (bytes originales no se guardan en
+/// ningún lado, sanar tras perder la sesión del motor no es posible — ver
+/// comentario explícito en `heal_media_item`), un magnet SÍ es su propio
+/// identificador estable: `heal_media_item` ya sabe re-agregar
+/// `source_type='magnet'` desde `source_identifier` (el magnet crudo), así
+/// que registrar la fila acá es seguro y hace que el ítem sobreviva un
+/// reinicio de la app, igual que archive.org.
+pub(crate) async fn add_torrent_inner(
+    engine: &Arc<dyn TorrentEngine>,
+    db: &Db,
+    magnet: String,
+    download_bps: Option<u32>,
+    upload_bps: Option<u32>,
+) -> Result<TorrentInfo, String> {
+    let info = engine
+        .add_with_limits(AddTorrentSource::Magnet(magnet.clone()), download_bps, upload_bps)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let media_id = uuid::Uuid::new_v4().to_string();
+    let title = info.name.clone().unwrap_or_else(|| info.info_hash.clone());
+    {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO media_items (id, source_type, source_identifier, title, engine_torrent_id) \
+             VALUES (?1, 'magnet', ?2, ?3, ?4)",
+            (&media_id, &magnet, &title, &info.id),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(info)
 }
 
 #[tauri::command]
 pub async fn add_torrent(
     engine: State<'_, EngineState>,
+    db: State<'_, Db>,
     magnet: String,
 ) -> Result<TorrentInfo, String> {
-    engine
-        .0
-        .add(AddTorrentSource::Magnet(magnet))
-        .await
-        .map_err(|e| e.to_string())
+    let (download_bps, upload_bps) = crate::app_settings::read_speed_limits_bps(&db)?;
+    add_torrent_inner(&engine.0, &db, magnet, download_bps, upload_bps).await
 }
 
 #[tauri::command]
@@ -168,10 +263,61 @@ async fn resolve_media_item_stream_url(
         _ => heal_media_item(http, engine, db, media_id, &source_type, &source_identifier).await?,
     };
 
+    // WebKitGTK no reproduce Matroska nativo vía <video src> (confirmado
+    // en vivo: MEDIA_ERR_SRC_NOT_SUPPORTED pese a que el sistema decodifica
+    // el mismo stream por otra vía — ver plan "Remux MKV -> MP4"). Si el
+    // archivo real es .mkv, hay que remuxearlo a MP4 (sin recodificar)
+    // antes de poder reproducirlo.
+    if let Ok(path) = engine.file_path(&resolved_id, file_idx).await {
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        if crate::engine::remux::needs_remux(file_name) {
+            return resolve_remuxed_stream_url(engine, media_id, &resolved_id, &path).await;
+        }
+    }
+
     engine
         .stream_url(&resolved_id, file_idx)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Sirve un ítem `.mkv` como MP4 remuxeado (cacheado por `media_id`, ver
+/// `remux::cache_path`) — separado de `resolve_media_item_stream_url`
+/// para no anidar más este camino, que ya es el caso menos común.
+async fn resolve_remuxed_stream_url(
+    engine: &Arc<dyn TorrentEngine>,
+    media_id: &str,
+    resolved_id: &str,
+    original_path: &std::path::Path,
+) -> Result<String, String> {
+    let downloads_dir = engine
+        .downloads_dir()
+        .ok_or_else(|| "el motor activo no soporta remux (requiere EmbeddedRqbit)".to_string())?;
+    let cached = crate::engine::remux::cache_path(downloads_dir, media_id);
+
+    if !cached.exists() {
+        // No se remuxea a medias: si el torrent todavía no terminó de
+        // descargar, el archivo tiene huecos y el remux produciría un MP4
+        // roto (Mandato 4, error honesto en vez de un intento silencioso).
+        let finished = engine
+            .list()
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|t| t.id == resolved_id)
+            .map(|t| t.finished)
+            .unwrap_or(false);
+        if !finished {
+            return Err(
+                "este formato (MKV) necesita terminar de descargar antes de poder reproducirse".to_string(),
+            );
+        }
+        crate::engine::remux::remux_mkv_to_mp4(original_path, &cached)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    engine.local_stream_url(cached).await.map_err(|e| e.to_string())
 }
 
 /// Re-agrega un ítem al motor a partir de su `source_type`/`source_identifier`
@@ -207,8 +353,14 @@ async fn heal_media_item(
             info.id
         }
         "magnet" => {
+            // add_seeding_from_disk (overwrite:true), no add() plano — mismo
+            // motivo que la rama "archive_org": si el archivo ya se
+            // descargó completo antes de perder la sesión del motor (ej.
+            // reinicio de la app), add() sin overwrite falla con
+            // "allow_overwrite = false" en vez de reengancharse al archivo
+            // ya existente (bug real encontrado en vivo, no hipotético).
             let info = engine
-                .add(AddTorrentSource::Magnet(source_identifier.to_string()))
+                .add_seeding_from_disk(AddTorrentSource::Magnet(source_identifier.to_string()), None)
                 .await
                 .map_err(|e| e.to_string())?;
             info.id
@@ -586,6 +738,44 @@ mod healing_tests {
     }
 
     #[tokio::test]
+    async fn add_torrent_inner_registers_media_item_that_survives_engine_restart() {
+        let db = migrated_db();
+        let engine: Arc<dyn TorrentEngine> = Arc::new(FakeEngine::with_existing(&[]));
+        let magnet = "magnet:?xt=urn:btih:abc&dn=one+piece";
+
+        let info = add_torrent_inner(&engine, &db, magnet.to_string(), None, None)
+            .await
+            .unwrap();
+
+        let (source_type, source_identifier, title): (String, String, String) = {
+            let conn = db.0.lock().unwrap();
+            conn.query_row(
+                "SELECT source_type, source_identifier, title FROM media_items WHERE engine_torrent_id = ?1",
+                [&info.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(source_type, "magnet");
+        assert_eq!(source_identifier, magnet, "source_identifier debe ser el magnet crudo, para poder re-agregarlo");
+        assert_eq!(title, "fake", "usa TorrentInfo.name cuando está presente");
+
+        let media_id: String = {
+            let conn = db.0.lock().unwrap();
+            conn.query_row("SELECT id FROM media_items WHERE engine_torrent_id = ?1", [&info.id], |r| r.get(0))
+                .unwrap()
+        };
+
+        // Simula un reinicio de la app: el motor pierde toda sesión previa.
+        let restarted_engine: Arc<dyn TorrentEngine> = Arc::new(FakeEngine::with_existing(&[]));
+        let http = reqwest::Client::new();
+        let url = resolve_media_item_stream_url(&http, &restarted_engine, &db, &media_id, 0)
+            .await
+            .unwrap();
+        assert!(url.starts_with("http://fake/"), "debe sanar re-agregando el magnet, no fallar: {url}");
+    }
+
+    #[tokio::test]
     async fn resolves_directly_when_engine_torrent_id_still_exists() {
         let db = migrated_db();
         insert_media_item(&db, "m1", "magnet", "magnet:?xt=urn:btih:abc", Some("5"));
@@ -723,7 +913,7 @@ mod seed_tests {
         let db = migrated_db();
         let tmp = std::env::temp_dir().join(format!("popcorn-seed-e2e-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
-        let embedded = crate::engine::embedded_rqbit::EmbeddedRqbit::new(tmp).await.unwrap();
+        let embedded = crate::engine::embedded_rqbit::EmbeddedRqbit::new_standalone(tmp).await.unwrap();
         let engine: Arc<dyn TorrentEngine> = Arc::new(embedded);
         let http = reqwest::Client::new();
 

@@ -78,3 +78,57 @@ export interface RecordingInfo {
   started_at: string;
   stopped_at: string | null;
 }
+
+export interface AiProviderConfig {
+  id: string;
+  kind: "gemini" | "openai_compatible";
+  label: string;
+  model: string;
+  base_url: string | null;
+  active: boolean;
+  has_api_key: boolean;
+}
+
+export interface JsonPaths {
+  items_path: string;
+  title_field: string;
+  magnet_field: string;
+  size_field: string | null;
+  seeders_field: string | null;
+}
+
+export interface Indexer {
+  id: string;
+  name: string;
+  search_url_template: string;
+  result_format: "magnet_list" | "rss" | "json";
+  json_paths: JsonPaths | null;
+  enabled: boolean;
+}
+
+export interface IndexerResult {
+  title: string;
+  magnet: string;
+  size: string | null;
+  seeders: string | null;
+  source_indexer: string;
+}
+
+export interface SourceSettings {
+  id: string;
+  label: string;
+  curation_enabled: boolean;
+  mediatype_filter: string | null;
+}
+
+export interface SpeedLimits {
+  upload_kbps: number | null;
+  download_kbps: number | null;
+}
+
+export interface TorrentEngineConfig {
+  kind: "embedded" | "qbittorrent";
+  qbittorrent_base_url: string | null;
+  qbittorrent_username: string | null;
+  qbittorrent_has_password: boolean;
+}
