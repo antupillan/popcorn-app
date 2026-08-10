@@ -22,6 +22,7 @@ interface BibliotecaProps {
   onPlayOnline: (title: string, url: string) => void;
   onPlayRecording: (recording: { id: string; name: string; durationSeconds: number }) => void;
   onMediaAdded: () => void;
+  onMediaRemoved: () => void;
 }
 
 // Tabs de nivel superior con tipografía más pesada que los sub-tabs de
@@ -36,6 +37,7 @@ export function Biblioteca({
   onPlayOnline,
   onPlayRecording,
   onMediaAdded,
+  onMediaRemoved,
 }: BibliotecaProps) {
   const [tab, setTab] = useState<Tab>("online");
 
@@ -48,7 +50,7 @@ export function Biblioteca({
             onClick={() => setTab(t.id)}
             className={`rounded-t-md px-3.5 py-2 text-sm font-semibold transition-colors ${
               tab === t.id
-                ? "border-b-2 border-sky-600 text-sky-600 dark:text-sky-400"
+                ? "border-b-2 border-[var(--accent)] text-[var(--accent)] dark:text-[var(--accent-fg)]"
                 : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
             }`}
           >
@@ -67,7 +69,9 @@ export function Biblioteca({
       )}
       {tab === "local" && <LocalLibraryTab onPlayLocal={onPlayLocal} />}
       {tab === "iptv" && <IptvView onPlayChannel={onPlayChannel} onPlayRecording={onPlayRecording} />}
-      {tab === "coleccion" && <MediaLibrary items={mediaItems} onPlay={onPlayMedia} />}
+      {tab === "coleccion" && (
+        <MediaLibrary items={mediaItems} onPlay={onPlayMedia} onRemoved={onMediaRemoved} />
+      )}
     </div>
   );
 }
