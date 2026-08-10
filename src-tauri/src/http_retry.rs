@@ -11,27 +11,41 @@ use std::time::Duration;
 const MAX_ATTEMPTS: u32 = 5;
 const RETRY_BACKOFF: Duration = Duration::from_millis(300);
 
-/// Reintenta una request HTTP saliente ante 5xx o error de conexión/timeout
-/// del origen. Motivado por evidencia real, no hipotética (bug #18, ver
-/// plan): archive.org confirmó devolver 500 intermitente en ~50% de los
-/// requests, reproducido repitiendo el mismo Range exacto contra el mismo
-/// datanode (206/500/206/500 en la misma corrida) — no depende del
-/// contenido pedido, es inestabilidad del lado del origen. Aplica al
-/// ecosistema completo de llamadas salientes (archive.org, indexers BYO,
-/// proveedores de IA), no solo al proxy de streaming donde se encontró.
+/// Cubre solo `.send()` (headers), no el body — no pisa el `.timeout()`
+/// de builder de descargas grandes. Sin esto, una conexión colgada nunca
+/// produce `Err` y `send_with_retry` espera para siempre (visto en vivo:
+/// proxy local caído a mitad de un request).
+const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Reintenta una request HTTP saliente ante 5xx, error de conexión, o un
+/// intento que se cuelga sin fallar (ver `ATTEMPT_TIMEOUT`). Motivado por
+/// evidencia real, no hipotética (bug #18, ver plan): archive.org confirmó
+/// devolver 500 intermitente en ~50% de los requests, reproducido
+/// repitiendo el mismo Range exacto contra el mismo datanode (206/500/206/500
+/// en la misma corrida) — no depende del contenido pedido, es inestabilidad
+/// del lado del origen. Aplica al ecosistema completo de llamadas salientes
+/// (archive.org, indexers BYO, proveedores de IA), no solo al proxy de
+/// streaming donde se encontró originalmente.
 ///
 /// `build` reconstruye la request en cada intento porque
 /// `reqwest::RequestBuilder` no implementa `Clone`. Solo apto para
 /// requests de solo lectura/idempotentes (GET, o POST cuyo body no cambia
 /// entre intentos) — todos los llamadores actuales lo son.
-pub async fn send_with_retry<F>(mut build: F) -> Result<reqwest::Response, reqwest::Error>
+pub async fn send_with_retry<F>(build: F) -> anyhow::Result<reqwest::Response>
 where
     F: FnMut() -> reqwest::RequestBuilder,
 {
-    let mut last_err = None;
+    send_with_retry_timeout(build, ATTEMPT_TIMEOUT).await
+}
+
+async fn send_with_retry_timeout<F>(mut build: F, attempt_timeout: Duration) -> anyhow::Result<reqwest::Response>
+where
+    F: FnMut() -> reqwest::RequestBuilder,
+{
+    let mut last_err: Option<anyhow::Error> = None;
     for attempt in 1..=MAX_ATTEMPTS {
-        match build().send().await {
-            Ok(r) if r.status().is_server_error() && attempt < MAX_ATTEMPTS => {
+        match tokio::time::timeout(attempt_timeout, build().send()).await {
+            Ok(Ok(r)) if r.status().is_server_error() && attempt < MAX_ATTEMPTS => {
                 eprintln!(
                     "[popcorn] http retry {attempt}/{MAX_ATTEMPTS}: url={} status={}",
                     r.url(),
@@ -39,14 +53,23 @@ where
                 );
                 tokio::time::sleep(RETRY_BACKOFF).await;
             }
-            Ok(r) => return Ok(r),
-            Err(e) if attempt < MAX_ATTEMPTS => {
+            Ok(Ok(r)) => return Ok(r),
+            Ok(Err(e)) if attempt < MAX_ATTEMPTS => {
                 eprintln!("[popcorn] http retry {attempt}/{MAX_ATTEMPTS}: error={e}");
                 tokio::time::sleep(RETRY_BACKOFF).await;
-                last_err = Some(e);
+                last_err = Some(e.into());
             }
-            Err(e) => {
-                last_err = Some(e);
+            Ok(Err(e)) => {
+                last_err = Some(e.into());
+                break;
+            }
+            Err(_elapsed) if attempt < MAX_ATTEMPTS => {
+                eprintln!("[popcorn] http retry {attempt}/{MAX_ATTEMPTS}: timeout tras {attempt_timeout:?}");
+                tokio::time::sleep(RETRY_BACKOFF).await;
+                last_err = Some(anyhow::anyhow!("timeout tras {attempt_timeout:?} esperando respuesta"));
+            }
+            Err(_elapsed) => {
+                last_err = Some(anyhow::anyhow!("timeout tras {attempt_timeout:?} esperando respuesta"));
                 break;
             }
         }
@@ -122,5 +145,38 @@ mod tests {
         .await;
         assert!(result.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), MAX_ATTEMPTS);
+    }
+
+    /// Regresión del bug real (proxy caído a mitad de un request): antes de
+    /// este fix, un listener que acepta y nunca responde colgaba para
+    /// siempre. Timeout chico vía `send_with_retry_timeout` para que el
+    /// test corra rápido.
+    #[tokio::test]
+    async fn gives_up_instead_of_hanging_forever_when_connection_never_responds() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Acepta conexiones y las deja abiertas sin leer ni escribir nada —
+        // imita un proxy/servidor que aceptó el TCP pero nunca responde.
+        tokio::spawn(async move {
+            loop {
+                let Ok((socket, _)) = listener.accept().await else { break };
+                std::mem::forget(socket);
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let started = std::time::Instant::now();
+        let result = send_with_retry_timeout(
+            || client.get(format!("http://127.0.0.1:{port}/")),
+            Duration::from_millis(100),
+        )
+        .await;
+
+        assert!(result.is_err(), "debe fallar, no colgarse para siempre");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "debe agotar los reintentos rápido, no esperar indefinidamente: tardó {:?}",
+            started.elapsed()
+        );
     }
 }
