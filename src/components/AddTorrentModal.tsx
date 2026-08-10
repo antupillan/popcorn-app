@@ -1,17 +1,18 @@
 import { useState } from "react";
 import type { ChangeEvent } from "react";
 import { api } from "../lib/api";
-import type { ArchiveOrgItem } from "../types";
+import type { ArchiveOrgItem, IndexerResult } from "../types";
 
 interface AddTorrentModalProps {
   onClose: () => void;
   onAdded: () => void;
 }
 
-type Tab = "search" | "magnet" | "file";
+type Tab = "search" | "indexers" | "magnet" | "file";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "search", label: "Buscar" },
+  { id: "indexers", label: "Mis Indexers" },
   { id: "magnet", label: "Magnet" },
   { id: "file", label: "Subir .torrent" },
 ];
@@ -41,7 +42,7 @@ export function AddTorrentModal({ onClose, onAdded }: AddTorrentModalProps) {
               onClick={() => setTab(t.id)}
               className={`rounded-t-md px-3 py-1.5 text-xs font-medium transition-colors ${
                 tab === t.id
-                  ? "border-b-2 border-sky-600 text-sky-600 dark:text-sky-400"
+                  ? "border-b-2 border-[var(--accent)] text-[var(--accent)] dark:text-[var(--accent-fg)]"
                   : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
               }`}
             >
@@ -52,6 +53,7 @@ export function AddTorrentModal({ onClose, onAdded }: AddTorrentModalProps) {
 
         <div className="flex-1 overflow-y-auto p-4">
           {tab === "search" && <SearchTab onAdded={onAdded} onClose={onClose} />}
+          {tab === "indexers" && <IndexersTab onAdded={onAdded} onClose={onClose} />}
           {tab === "magnet" && <MagnetTab onAdded={onAdded} onClose={onClose} />}
           {tab === "file" && <FileTab onAdded={onAdded} onClose={onClose} />}
         </div>
@@ -115,12 +117,12 @@ function SearchTab({ onAdded, onClose }: TabProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Título a buscar..."
-          className="flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-sky-500 dark:border-zinc-700 dark:bg-zinc-950"
+          className="flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-[var(--accent-hover)] dark:border-zinc-700 dark:bg-zinc-950"
         />
         <button
           type="submit"
           disabled={loading}
-          className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+          className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
         >
           {loading ? "Buscando…" : "Buscar"}
         </button>
@@ -152,9 +154,110 @@ function SearchTab({ onAdded, onClose }: TabProps) {
             <button
               onClick={() => add(item)}
               disabled={addingId === item.identifier}
-              className="shrink-0 rounded-md border border-sky-600 px-2.5 py-1 text-[11px] font-semibold text-sky-600 hover:bg-sky-600 hover:text-white disabled:opacity-50 dark:text-sky-400"
+              className="shrink-0 rounded-md border border-[var(--accent)] px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white disabled:opacity-50 dark:text-[var(--accent-fg)]"
             >
               {addingId === item.identifier ? "Agregando…" : "Agregar"}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function IndexersTab({ onAdded, onClose }: TabProps) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<IndexerResult[]>([]);
+  const [searched, setSearched] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [addingMagnet, setAddingMagnet] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function search() {
+    if (!query.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      setResults(await api.searchIndexers(query));
+      setSearched(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function add(item: IndexerResult) {
+    setAddingMagnet(item.magnet);
+    setError(null);
+    try {
+      await api.addTorrent(item.magnet);
+      onAdded();
+      onClose();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setAddingMagnet(null);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+        Busca en tus indexers agregados (curados por IA si los activaste en Ajustes) — Popcorn no trae ninguno precargado.
+      </p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          search();
+        }}
+        className="flex gap-2"
+      >
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Título a buscar..."
+          className="flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-[var(--accent-hover)] dark:border-zinc-700 dark:bg-zinc-950"
+        />
+        <button
+          type="submit"
+          disabled={loading}
+          className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+        >
+          {loading ? "Buscando…" : "Buscar"}
+        </button>
+      </form>
+
+      {error && <p className="text-xs text-red-500">{error}</p>}
+
+      {searched && !loading && !error && results.length === 0 && (
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          Sin resultados, o no tenés indexers agregados — configuralos en Ajustes → Indexers.
+        </p>
+      )}
+
+      <ul className="flex flex-col gap-1.5">
+        {results.map((item) => (
+          <li
+            key={item.magnet}
+            className="flex items-center justify-between gap-2 rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800"
+          >
+            <div className="min-w-0">
+              <p className="truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">{item.title}</p>
+              <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+                <span className="rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 font-medium text-[var(--accent)] dark:text-[var(--accent-fg)]">
+                  {item.source_indexer}
+                </span>
+                {item.size && <span>{item.size}</span>}
+                {item.seeders && <span>{item.seeders} seeders</span>}
+              </div>
+            </div>
+            <button
+              onClick={() => add(item)}
+              disabled={addingMagnet === item.magnet}
+              className="shrink-0 rounded-md border border-[var(--accent)] px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white disabled:opacity-50 dark:text-[var(--accent-fg)]"
+            >
+              {addingMagnet === item.magnet ? "Agregando…" : "Agregar"}
             </button>
           </li>
         ))}
@@ -196,13 +299,13 @@ function MagnetTab({ onAdded, onClose }: TabProps) {
         onChange={(e) => setMagnet(e.target.value)}
         placeholder="magnet:?xt=urn:btih:..."
         rows={4}
-        className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-xs outline-none focus:border-sky-500 dark:border-zinc-700 dark:bg-zinc-950"
+        className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-xs outline-none focus:border-[var(--accent-hover)] dark:border-zinc-700 dark:bg-zinc-950"
       />
       {error && <p className="text-xs text-red-500">{error}</p>}
       <button
         type="submit"
         disabled={loading}
-        className="self-end rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+        className="self-end rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
       >
         {loading ? "Agregando…" : "Agregar"}
       </button>
@@ -234,7 +337,7 @@ function FileTab({ onAdded, onClose }: TabProps) {
 
   return (
     <div className="flex flex-col gap-3">
-      <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed border-zinc-300 px-4 py-8 text-center text-xs text-zinc-500 hover:border-sky-500 hover:text-sky-600 dark:border-zinc-700 dark:hover:border-sky-500">
+      <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed border-zinc-300 px-4 py-8 text-center text-xs text-zinc-500 hover:border-[var(--accent-hover)] hover:text-[var(--accent)] dark:border-zinc-700 dark:hover:border-[var(--accent-hover)]">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-6 w-6">
           <path d="M12 16V4m0 0L7 9m5-5 5 5M5 20h14" />
         </svg>
