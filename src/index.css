@@ -2,11 +2,18 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Paleta sobria KDE/macOS: zinc/slate neutros, un único acento (sky).
-   Requisito explícito del usuario — nunca varios colores de acento por
-   ítem, nunca tonos "chillones" (naranja/morado/verde saturados). */
+/* Paleta sobria KDE/macOS: zinc/slate neutros, un único acento. El acento
+   sigue al accent color real del escritorio (portal freedesktop, ver
+   os_accent.rs) cuando está disponible — sky-600 es el fallback fijo, no
+   ya un color fijo siempre. Nunca varios colores de acento por ítem, nunca
+   tonos "chillones" (naranja/morado/verde saturados) en el resto de la UI. */
 :root {
   color-scheme: light dark;
+  --accent: #0284c7;
+  --accent-hover: color-mix(in srgb, var(--accent) 75%, white);
+  --accent-fg: color-mix(in srgb, var(--accent) 55%, white);
+  --accent-soft: color-mix(in srgb, var(--accent) 15%, transparent);
+  --accent-ring: color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
 html,

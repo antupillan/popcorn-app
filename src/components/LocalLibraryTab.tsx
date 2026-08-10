@@ -55,7 +55,7 @@ export function LocalLibraryTab({ onPlayLocal }: LocalLibraryTabProps) {
         </p>
         <button
           onClick={pickFolder}
-          className="shrink-0 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+          className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--accent-hover)]"
         >
           {folder ? "Cambiar carpeta" : "Elegir carpeta"}
         </button>
@@ -85,7 +85,7 @@ export function LocalLibraryTab({ onPlayLocal }: LocalLibraryTabProps) {
               <p className="min-w-0 truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">{f.name}</p>
               <button
                 onClick={() => onPlayLocal(f)}
-                className="shrink-0 rounded-md border border-sky-600 px-2.5 py-1 text-[11px] font-semibold text-sky-600 hover:bg-sky-600 hover:text-white dark:text-sky-400"
+                className="shrink-0 rounded-md border border-[var(--accent)] px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white dark:text-[var(--accent-fg)]"
               >
                 Reproducir
               </button>

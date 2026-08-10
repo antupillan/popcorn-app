@@ -60,7 +60,7 @@ export function TorrentList({ torrents, onChanged }: TorrentListProps) {
 
             <div className="h-1.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
               <div
-                className="h-full bg-sky-600 transition-all"
+                className="h-full bg-[var(--accent)] transition-all"
                 style={{ width: `${Math.min(pct, 100)}%` }}
               />
             </div>
