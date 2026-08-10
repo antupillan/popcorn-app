@@ -200,6 +200,27 @@ const MIGRATIONS: &[&str] = &[
         'películas reales de las colecciones de cine clásico de archive.org, no rips de baja calidad ni duplicados'
     );
     "#,
+    r#"
+    -- Caché de curación IA (puntaje absoluto, no orden relativo — ver plan
+    -- "Caché de curación IA con puntaje absoluto") + tracking de
+    -- disponibilidad (ping), ambos por ítem, compartiendo identidad
+    -- (source_id = mismo id que source_settings; item_key = "{kind}:{identifier}"
+    -- para Online, url del canal para IPTV). hint_used es la clave de
+    -- invalidación: si difiere del curation_hint vigente, el ítem se
+    -- re-cura. consecutive_ping_failures es independiente de la curación
+    -- IA — se actualiza en cada sesión sin importar si hubo re-curación.
+    CREATE TABLE curation_cache (
+        source_id TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        included INTEGER NOT NULL DEFAULT 1,
+        score INTEGER,
+        hint_used TEXT,
+        consecutive_ping_failures INTEGER NOT NULL DEFAULT 0,
+        last_ping_at TEXT,
+        cached_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (source_id, item_key)
+    );
+    "#,
 ];
 
 fn db_path(app: &AppHandle) -> Result<PathBuf> {

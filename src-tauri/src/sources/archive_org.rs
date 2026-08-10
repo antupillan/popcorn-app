@@ -228,13 +228,21 @@ pub async fn primary_video_file(
     ))
 }
 
+/// URL del `.torrent` público de un ítem — una sola fuente de verdad,
+/// reusada por `fetch_torrent_bytes` (descarga real) y por el ping de
+/// disponibilidad de curación (`availability_ping.rs`: "disponible" para
+/// esta familia de fuentes significa que este `.torrent` responde).
+pub(crate) fn torrent_url(identifier: &str) -> String {
+    format!("https://archive.org/download/{identifier}/{identifier}_archive.torrent")
+}
+
 /// Descarga el .torrent público del ítem. archive.org redirige (302) al
 /// datanode real que lo sirve — reqwest sigue redirects por defecto.
 pub async fn fetch_torrent_bytes(
     client: &reqwest::Client,
     identifier: &str,
 ) -> anyhow::Result<Vec<u8>> {
-    let url = format!("https://archive.org/download/{identifier}/{identifier}_archive.torrent");
+    let url = torrent_url(identifier);
     let resp = crate::http_retry::send_with_retry(|| client.get(&url))
         .await
         .with_context(|| format!("no se pudo descargar {url}"))?

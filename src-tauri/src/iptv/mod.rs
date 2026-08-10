@@ -4,10 +4,10 @@ pub mod recorder;
 
 use anyhow::Context;
 use rusqlite::OptionalExtension;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
-use crate::ai::{commands::try_build_active_provider, curation};
+use crate::ai::{commands::try_build_active_provider, curation, AiProvider};
 use crate::db::Db;
 
 #[derive(Serialize, Clone)]
@@ -19,7 +19,7 @@ pub struct IptvSource {
     pub enabled: bool,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Channel {
     pub name: String,
     pub url: String,
@@ -231,9 +231,12 @@ fn curation_hint_for(db: &Db, source_id: &str) -> Result<Option<String>, String>
 /// Despacha contra todas las fuentes IPTV habilitadas y fusiona canales.
 /// Ningún canal se persiste — se refetchea/reparsea en cada llamada, mismo
 /// criterio que `search_indexers` con los indexers. Una fuente que falla no
-/// tira abajo a las demás. Curación por IA (fail-open si no hay proveedor
-/// activo) se aplica por fuente, con su propio `curation_hint`, antes de
-/// fusionar — no sobre la lista ya mezclada.
+/// tira abajo a las demás. Sin curación acá a propósito — separada en
+/// `curate_channels` (comando aparte, ver abajo). Encontrado en vivo: con
+/// un proveedor de IA activo, curar síncrono acá bloqueaba la pestaña
+/// Canales varios segundos/minutos antes de mostrar nada, aunque el fetch
+/// en sí es rápido — mismo bug ya resuelto en `browse_online_library_fast_inner`
+/// (ver online_library.rs), nunca replicado acá hasta ahora.
 #[tauri::command]
 pub async fn list_channels(
     app: tauri::AppHandle,
@@ -256,44 +259,113 @@ pub async fn list_channels(
         rows
     };
 
-    let provider = try_build_active_provider(&db)?;
-
     let mut all = Vec::new();
     for source in &enabled {
         match fetch_channels_for_source(&app, &http.0, source).await {
-            Ok(mut channels) => {
-                if let Some(provider) = &provider {
-                    if curation_enabled_for(&db, &source.id)? {
-                        let hint = curation_hint_for(&db, &source.id)?;
-                        channels = curation::curate_by_hint(
-                            provider.as_ref(),
-                            channels,
-                            |c| c.name.as_str(),
-                            hint.as_deref(),
-                        )
-                        .await;
-                    }
-                }
-                all.append(&mut channels);
-            }
+            Ok(mut channels) => all.append(&mut channels),
             Err(e) => eprintln!("[popcorn] fuente IPTV '{}' falló: {e}", source.name),
         }
     }
     Ok(all)
 }
 
-/// "Supervisión liviana" de playback (ver plan): valida/reintenta el
-/// manifest inicial contra el origen, nunca proxea segmentos — esos los pide
-/// `hls.js` directo. Devuelve la URL final (post-redirect) para que el
-/// frontend apunte ahí.
+/// Cura una lista de canales ya obtenida (ver `list_channels`) — se llama
+/// después de renderizar el resultado rápido sin curar, nunca antes.
+/// Agrupa por `source_id` (a diferencia de `curate_online_items_inner`, que
+/// agrupa por un `kind` fijo: acá las fuentes son dinámicas, el usuario
+/// agrega las que quiere) para aplicar el `curation_hint` correcto de cada
+/// fuente. Orden final por `score` (ver `ai::curation::curate_by_hint`), no
+/// por orden de aparición. Por cada grupo corre, en paralelo
+/// (`tokio::join!`): curación IA (con caché, solo cura ítems nuevos o con
+/// hint cambiado) y ping de disponibilidad (`availability_ping`, corre
+/// siempre, incluso con `curation_enabled=0` — son chequeos distintos).
+/// Canales con `consecutive_ping_failures` por encima del umbral quedan
+/// afuera del resultado.
+async fn curate_channels_inner(
+    db: &Db,
+    http: &reqwest::Client,
+    provider: Option<&dyn AiProvider>,
+    channels: Vec<Channel>,
+) -> Result<Vec<Channel>, String> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::HashMap<String, Vec<Channel>> = std::collections::HashMap::new();
+    for ch in channels {
+        groups
+            .entry(ch.source_id.clone())
+            .or_insert_with(|| {
+                order.push(ch.source_id.clone());
+                Vec::new()
+            })
+            .push(ch);
+    }
+
+    // Un solo semáforo para todas las fuentes de esta llamada — los grupos
+    // se procesan secuenciales (no en paralelo entre sí, a diferencia de
+    // Online), pero compartirlo es igual de correcto y evita duplicar el
+    // criterio de a dónde vive el límite real.
+    let ping_semaphore = crate::availability_ping::new_ping_semaphore();
+
+    let mut result = Vec::new();
+    for source_id in order {
+        let group = groups.remove(&source_id).unwrap();
+
+        let ping_targets: Vec<(String, String)> =
+            group.iter().map(|c| (c.url.clone(), c.url.clone())).collect();
+        let http_for_ping = http.clone();
+        let ping_fut = crate::availability_ping::ping_many(ping_targets, ping_semaphore.clone(), move |url| {
+            let client = http_for_ping.clone();
+            async move { probe_manifest(&client, &url).await.is_ok() }
+        });
+
+        let source_id_for_curate = source_id.clone();
+        let curate_fut = async move {
+            if let Some(provider) = provider {
+                if curation_enabled_for(db, &source_id_for_curate)? {
+                    let hint = curation_hint_for(db, &source_id_for_curate)?;
+                    return curation::curate_by_hint(
+                        db,
+                        &source_id_for_curate,
+                        provider,
+                        group,
+                        |c: &Channel| c.name.as_str(),
+                        |c: &Channel| c.url.clone(),
+                        hint.as_deref(),
+                    )
+                    .await;
+                }
+            }
+            Ok(group)
+        };
+
+        let (ping_results, curated) = tokio::join!(ping_fut, curate_fut);
+        crate::availability_ping::record_ping_results(db, &source_id, &ping_results)?;
+        let mut curated = curated?;
+        let failure_counts = crate::availability_ping::ping_failure_counts(db, &source_id)?;
+        curated.retain(|c| {
+            failure_counts.get(&c.url).copied().unwrap_or(0)
+                < crate::availability_ping::CONSECUTIVE_FAILURES_THRESHOLD
+        });
+        result.extend(curated);
+    }
+    Ok(result)
+}
+
 #[tauri::command]
-pub async fn validate_channel_manifest(
+pub async fn curate_channels(
+    db: State<'_, Db>,
     http: State<'_, crate::commands::HttpClient>,
-    url: String,
-) -> Result<String, String> {
-    let resp = crate::http_retry::send_with_retry(|| http.0.get(&url))
-        .await
-        .map_err(|e| e.to_string())?;
+    channels: Vec<Channel>,
+) -> Result<Vec<Channel>, String> {
+    let provider = try_build_active_provider(&db)?;
+    curate_channels_inner(&db, &http.0, provider.as_deref(), channels).await
+}
+
+/// Confirma que una respuesta HTTP ya obtenida es un manifest HLS real
+/// (status 2xx + cuerpo que arranca con `#EXTM3U`) — separado del fetch en
+/// sí porque tanto el comando de playback como `probe_manifest` (ping de
+/// curación, ver `availability_ping.rs`) llegan acá después de su propio
+/// `http_retry::send_with_retry`, sin duplicar la validación del cuerpo.
+async fn validate_manifest_response(resp: reqwest::Response) -> Result<String, String> {
     if !resp.status().is_success() {
         return Err(format!("el canal respondió con estado {}", resp.status()));
     }
@@ -305,9 +377,165 @@ pub async fn validate_channel_manifest(
     Ok(final_url)
 }
 
+/// "Supervisión liviana" de playback (ver plan) y ping de disponibilidad
+/// para el caché de curación (ver `availability_ping.rs`) comparten esta
+/// función — ambos usos van con la política de 5 reintentos de
+/// `http_retry`. Se probó en un solo intento primero, pero eso genera
+/// falsos positivos ante orígenes con fallo intermitente conocido (mismo
+/// hallazgo que motivó el reintento en `availability_ping::ping_ok` —
+/// verificado en vivo, no solo hipotético). "Disponible" para un canal
+/// IPTV es que cargue un manifest real, no solo que el status sea 2xx (a
+/// diferencia de la familia archive.org/PDT) — un canal roto suele
+/// devolver 200 con una página de error en vez de un manifest, aclarado
+/// explícitamente por el usuario al pedir esto. Devuelve la URL final
+/// (post-redirect) para que el frontend apunte ahí.
+pub(crate) async fn probe_manifest(client: &reqwest::Client, url: &str) -> Result<String, String> {
+    let resp = crate::http_retry::send_with_retry(|| client.get(url))
+        .await
+        .map_err(|e| e.to_string())?;
+    validate_manifest_response(resp).await
+}
+
+#[tauri::command]
+pub async fn validate_channel_manifest(
+    http: State<'_, crate::commands::HttpClient>,
+    url: String,
+) -> Result<String, String> {
+    probe_manifest(&http.0, &url).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use rusqlite::Connection;
+
+    fn migrated_db() -> Db {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        Db(std::sync::Mutex::new(conn))
+    }
+
+    fn seed_source_settings(db: &Db, id: &str, curation_enabled: bool, hint: Option<&str>) {
+        let conn = db.0.lock().unwrap();
+        conn.execute(
+            "INSERT INTO source_settings (id, curation_enabled, curation_hint) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, curation_enabled as i64, hint],
+        )
+        .unwrap();
+    }
+
+    fn channel(source_id: &str, name: &str) -> Channel {
+        Channel {
+            name: name.to_string(),
+            // Puerto sin listener en loopback: el ping falla rápido
+            // ("connection refused", sin DNS) sin depender de red real ni
+            // de un mock — a estos tests no les importa el resultado del
+            // ping, solo que curate_channels_inner no explote por él.
+            url: format!("http://127.0.0.1:1/{name}.m3u8"),
+            group: None,
+            logo_url: None,
+            tvg_id: None,
+            source_id: source_id.to_string(),
+        }
+    }
+
+    /// Incluye todos los candidatos con un score fijo — no filtra ni
+    /// reordena, pero graba el `hint` recibido en cada llamada para que
+    /// el test pueda verificar que cada grupo usó su propio hint.
+    struct HintRecordingProvider(std::sync::Mutex<Vec<Option<String>>>);
+    #[async_trait]
+    impl AiProvider for HintRecordingProvider {
+        fn name(&self) -> &'static str {
+            "fake-hint-recording"
+        }
+        async fn parse_query(&self, _text: &str) -> anyhow::Result<crate::ai::StructuredQuery> {
+            unreachable!("no lo usa este test")
+        }
+        async fn curate_results(
+            &self,
+            _query: &crate::ai::StructuredQuery,
+            _candidates: &[String],
+        ) -> anyhow::Result<Vec<usize>> {
+            unreachable!("no lo usa este test")
+        }
+        async fn curate_by_hint(
+            &self,
+            candidates: &[String],
+            hint: Option<&str>,
+        ) -> anyhow::Result<Vec<crate::ai::ScoredCandidate>> {
+            self.0.lock().unwrap().push(hint.map(|h| h.to_string()));
+            Ok((0..candidates.len())
+                .map(|i| crate::ai::ScoredCandidate { index: i, score: 50 })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn curate_channels_inner_applies_the_right_hint_per_source_group() {
+        let db = migrated_db();
+        seed_source_settings(&db, "src_a", true, Some("hint A"));
+        seed_source_settings(&db, "src_b", true, Some("hint B"));
+        let channels = vec![channel("src_a", "A1"), channel("src_b", "B1"), channel("src_a", "A2")];
+        let provider = HintRecordingProvider(std::sync::Mutex::new(Vec::new()));
+        let http = reqwest::Client::new();
+
+        let result = curate_channels_inner(&db, &http, Some(&provider), channels).await.unwrap();
+
+        assert_eq!(result.len(), 3, "no debe perder canales al agrupar/desagrupar");
+        let mut hints_seen = provider.0.into_inner().unwrap();
+        hints_seen.sort();
+        assert_eq!(
+            hints_seen,
+            vec![Some("hint A".to_string()), Some("hint B".to_string())],
+            "cada grupo de source_id debe curarse con su propio hint, no mezclado"
+        );
+    }
+
+    #[tokio::test]
+    async fn curate_channels_inner_skips_disabled_sources_without_calling_provider() {
+        let db = migrated_db();
+        seed_source_settings(&db, "src_off", false, Some("no debería usarse"));
+        let channels = vec![channel("src_off", "X1")];
+        let provider = HintRecordingProvider(std::sync::Mutex::new(Vec::new()));
+        let http = reqwest::Client::new();
+
+        let result = curate_channels_inner(&db, &http, Some(&provider), channels.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "X1");
+        assert!(
+            provider.0.into_inner().unwrap().is_empty(),
+            "curation_enabled=0 no debe llamar al proveedor"
+        );
+    }
+
+    #[tokio::test]
+    async fn curate_channels_inner_returns_channels_unchanged_without_a_provider() {
+        let db = migrated_db();
+        let channels = vec![channel("src_a", "A1")];
+        let http = reqwest::Client::new();
+
+        let result = curate_channels_inner(&db, &http, None, channels.clone()).await.unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "A1");
+    }
+
+    #[tokio::test]
+    async fn curate_channels_inner_drops_channels_over_the_ping_failure_threshold() {
+        let db = migrated_db();
+        let ch = channel("src_a", "Dead");
+        // Ya venía con 5 fallas consecutivas de sesiones anteriores.
+        crate::availability_ping::record_ping_results(&db, "src_a", &vec![(ch.url.clone(), false); 5]).unwrap();
+
+        let http = reqwest::Client::new();
+        let result = curate_channels_inner(&db, &http, None, vec![ch]).await.unwrap();
+
+        assert!(result.is_empty(), "un canal con 5 fallas de ping consecutivas debe quedar afuera del grid");
+    }
 
     #[test]
     fn fetch_channels_from_file_reads_and_parses_local_playlist() {

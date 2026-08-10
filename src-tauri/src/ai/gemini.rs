@@ -4,7 +4,8 @@ use serde_json::json;
 
 use super::{
     build_curation_user_text, build_hint_curation_user_text, extract_index_list,
-    extract_structured_query, AiProvider, StructuredQuery, CURATE_BY_HINT_SYSTEM_PROMPT,
+    extract_scored_list, extract_structured_query, AiProvider, ScoredCandidate, StructuredQuery,
+    CURATE_BY_HINT_EXAMPLE_ASSISTANT, CURATE_BY_HINT_EXAMPLE_USER, CURATE_BY_HINT_SYSTEM_PROMPT,
     CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
 };
 
@@ -72,6 +73,21 @@ fn parse_curation_response_body(body: &str) -> anyhow::Result<Vec<usize>> {
     extract_index_list(&raw)
 }
 
+/// Igual patrón que `parse_curation_response_body` pero para el contrato
+/// `{"items": [{"index", "score"}, ...]}` de `curate_by_hint`, usado solo
+/// por ese método (`curate_results` sigue en `parse_curation_response_body`).
+fn parse_hint_curation_response_body(body: &str) -> anyhow::Result<Vec<ScoredCandidate>> {
+    let resp: GenerateContentResponse = serde_json::from_str(body)?;
+    let raw = resp
+        .candidates
+        .into_iter()
+        .next()
+        .and_then(|c| c.content.parts.into_iter().next())
+        .map(|p| p.text)
+        .ok_or_else(|| anyhow::anyhow!("Gemini no devolvió contenido en la respuesta"))?;
+    extract_scored_list(&raw)
+}
+
 #[async_trait]
 impl AiProvider for GeminiProvider {
     fn name(&self) -> &'static str {
@@ -127,11 +143,15 @@ impl AiProvider for GeminiProvider {
         &self,
         candidates: &[String],
         hint: Option<&str>,
-    ) -> anyhow::Result<Vec<usize>> {
+    ) -> anyhow::Result<Vec<ScoredCandidate>> {
         let url = format!("{API_BASE}/models/{}:generateContent", self.model);
         let text = build_hint_curation_user_text(candidates, hint);
         let body = json!({
-            "contents": [{"parts": [{"text": text}]}],
+            "contents": [
+                {"role": "user", "parts": [{"text": CURATE_BY_HINT_EXAMPLE_USER}]},
+                {"role": "model", "parts": [{"text": CURATE_BY_HINT_EXAMPLE_ASSISTANT}]},
+                {"role": "user", "parts": [{"text": text}]}
+            ],
             "systemInstruction": {"parts": [{"text": CURATE_BY_HINT_SYSTEM_PROMPT}]},
             "generationConfig": {"responseMimeType": "application/json"}
         });
@@ -145,7 +165,7 @@ impl AiProvider for GeminiProvider {
         .error_for_status()?
         .text()
         .await?;
-        parse_curation_response_body(&raw_body)
+        parse_hint_curation_response_body(&raw_body)
     }
 }
 
@@ -194,6 +214,32 @@ mod tests {
     fn curation_errors_when_no_candidates() {
         let body = r#"{"candidates": []}"#;
         assert!(parse_curation_response_body(body).is_err());
+    }
+
+    #[test]
+    fn parses_real_shaped_hint_curation_response() {
+        let body = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "{\"items\": [{\"index\": 2, \"score\": 90}, {\"index\": 0, \"score\": 40}]}"}],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }]
+        }"#;
+        assert_eq!(
+            parse_hint_curation_response_body(body).unwrap(),
+            vec![
+                ScoredCandidate { index: 2, score: 90 },
+                ScoredCandidate { index: 0, score: 40 },
+            ]
+        );
+    }
+
+    #[test]
+    fn hint_curation_errors_when_no_candidates() {
+        let body = r#"{"candidates": []}"#;
+        assert!(parse_hint_curation_response_body(body).is_err());
     }
 
     #[tokio::test]

@@ -1,7 +1,6 @@
 pub mod commands;
 pub mod curation;
 pub mod gemini;
-pub mod keychain;
 pub mod openai_compatible;
 
 use async_trait::async_trait;
@@ -16,6 +15,19 @@ pub struct StructuredQuery {
     pub title: String,
     pub year: Option<i32>,
     pub genre: Option<String>,
+}
+
+/// Resultado de `curate_by_hint` para UN candidato incluido — a diferencia
+/// de `curate_results` (orden relativo dentro de una sola tanda,
+/// `Vec<usize>`), acá el `score` es absoluto (0-100) para que sea
+/// comparable entre llamadas separadas y así se pueda cachear en SQLite
+/// y fusionar con resultados de otras sesiones sin perder coherencia de
+/// orden (ver `ai::curation::curate_by_hint` y el caché de curación en el
+/// plan). Candidatos no incluidos simplemente no aparecen en el `Vec`.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct ScoredCandidate {
+    pub index: usize,
+    pub score: i32,
 }
 
 /// Abstracción agnóstica de proveedor de IA (Mandato 8) — mismo patrón que
@@ -46,12 +58,15 @@ pub trait AiProvider: Send + Sync {
     /// contenido BYO es responsabilidad de quien lo agrega). Sirve tanto a
     /// canales IPTV como a catálogo Online (Biblioteca unificada) — el
     /// criterio vive enteramente en `hint`, no en el prompt fijo. Ver
-    /// `CURATE_BY_HINT_SYSTEM_PROMPT`.
+    /// `CURATE_BY_HINT_SYSTEM_PROMPT`. A diferencia de `curate_results`,
+    /// devuelve un puntaje absoluto por candidato (`ScoredCandidate`), no
+    /// solo un orden relativo — necesario para que el caché de curación
+    /// (SQLite) pueda comparar resultados de llamadas separadas entre sí.
     async fn curate_by_hint(
         &self,
         candidates: &[String],
         hint: Option<&str>,
-    ) -> anyhow::Result<Vec<usize>>;
+    ) -> anyhow::Result<Vec<ScoredCandidate>>;
 }
 
 /// Prompt fijo por la app (no editable por el usuario ni por config) —
@@ -96,18 +111,37 @@ pub(crate) fn build_curation_user_text(query: &StructuredQuery, candidates: &[St
 /// usuario haya escrito. El prompt en sí queda fijo — el criterio variable
 /// vive en el mensaje de usuario (`build_hint_curation_user_text`), igual
 /// que la búsqueda ya viaja en el mensaje de usuario para `curate_results`,
-/// nunca en el prompt de sistema. Mismo contrato `{"indices": [...]}` que
-/// `CURATE_RESULTS_SYSTEM_PROMPT` por la misma razón (modo JSON forzado de
-/// OpenAI exige objeto, no array).
+/// nunca en el prompt de sistema. A diferencia de
+/// `CURATE_RESULTS_SYSTEM_PROMPT`, pide un puntaje absoluto por candidato
+/// (0-100) en vez de solo un orden relativo dentro de la tanda — el caché
+/// de curación (SQLite) persiste ese puntaje y lo compara contra el de
+/// llamadas separadas (otras sesiones, otros lotes de ítems nuevos) para
+/// poder fusionar todo en un único orden coherente sin re-curar lo ya
+/// evaluado. Riesgo conocido, no ocultado (Mandato 1): no hay garantía de
+/// que un LLM aplique la misma escala interna en evaluaciones separadas
+/// — la ancla explícita 0/100 y la instrucción de "absoluto, no relativo
+/// a esta tanda" son la mitigación disponible a nivel de prompt, no una
+/// garantía de ingeniería.
 pub(crate) const CURATE_BY_HINT_SYSTEM_PROMPT: &str = "Sos un filtro de curación para listas de contenido agregadas de internet (canales de TV en vivo o catálogo de video), que mezclan entradas legítimas con basura, duplicados, entradas rotas o de dudosa procedencia. \
 Se te da un criterio de curación y una lista numerada de candidatos (nombre de canal o título, con categoría/género entre paréntesis cuando está disponible). \
-Devolvé ÚNICAMENTE un objeto JSON con esta forma exacta, sin texto adicional: {\"indices\": [number, ...]}. \
-`indices` son los índices (enteros, base 0) de los candidatos que cumplen el criterio dado, ordenados del más al menos ajustado a ese criterio. \
-Si el criterio pide verificar legitimidad como radiodifusor público/oficial, juzgalo por el nombre y la categoría — excluí spam, placeholders, duplicados evidentes y canales comerciales/privados sin relación con radiodifusión pública. \
-Si el criterio pide contenido real de un catálogo (ej. películas), excluí archivos de prueba, demos técnicos, vlogs genéricos y entradas rotas o sin relación evidente con el criterio. \
+Devolvé ÚNICAMENTE un objeto JSON con esta forma exacta, sin texto adicional: {\"items\": [{\"index\": number, \"score\": number}, ...]}. \
+`index` es el índice (entero, base 0) del candidato sobre la lista dada. `score` es un puntaje entero de 0 a 100 que mide qué tan bien ese candidato cumple el criterio dado: 100 significa que lo cumple perfectamente, 0 que no lo cumple en absoluto. \
+El puntaje tiene que ser ABSOLUTO, no relativo a los demás candidatos de esta lista puntual — se va a comparar contra puntajes que vos mismo (u otra instancia tuya) le asignes a otros candidatos en llamadas completamente separadas, posiblemente días después, así que aplicá siempre el mismo criterio de 0 a 100 sin ajustarlo a lo que veas en esta tanda en particular. \
+Si el criterio pide verificar legitimidad como radiodifusor público/oficial, juzgalo por el nombre y la categoría — puntuá bajo (cerca de 0) spam, placeholders, duplicados evidentes y canales comerciales/privados sin relación con radiodifusión pública. \
+Si el criterio pide contenido real de un catálogo (ej. películas), puntuá bajo archivos de prueba, demos técnicos, vlogs genéricos y entradas rotas o sin relación evidente con el criterio. \
 Si no se da ningún criterio, aplicá el criterio de legitimidad/calidad que mejor corresponda al tipo de candidatos dado. \
-No inventes índices que no estén en la lista de candidatos. Si ningún candidato cumple el criterio, devolvé {\"indices\": []}. \
+Solo incluí en `items` los candidatos con score mayor a 0 — omití directamente (no incluyas en la lista) los que no cumplen el criterio en absoluto. No inventes índices que no estén en la lista de candidatos. Si ningún candidato cumple el criterio, devolvé {\"items\": []}. \
 Nunca sugieras sitios, URLs, ni agregues texto, explicación o markdown fuera del objeto JSON.";
+
+/// Ejemplo few-shot (par usuario/asistente) enviado junto al system prompt
+/// en `curate_by_hint`, mismo par en ambos providers — refuerza en
+/// concreto las tres reglas del prompt (excluir irrelevante, excluir
+/// duplicado, puntaje absoluto 0-100 sobre lo que queda) en vez de
+/// dejarlas solo en prosa. No es una llamada de red extra: viaja en la
+/// misma request, como mensajes previos de la conversación.
+pub(crate) const CURATE_BY_HINT_EXAMPLE_USER: &str =
+    "Criterio: radiodifusores públicos oficiales\n\nCandidatos:\n0: Radio Nacional (Noticias)\n1: MegaVideos XXX (Adultos)\n2: Radio Nacional (Noticias)";
+pub(crate) const CURATE_BY_HINT_EXAMPLE_ASSISTANT: &str = "{\"items\": [{\"index\": 0, \"score\": 95}]}";
 
 /// Arma el texto de usuario para `curate_by_hint`: criterio (`hint`, si lo
 /// hay) + lista numerada de candidatos, mismo formato para cualquier
@@ -149,6 +183,29 @@ pub(crate) fn extract_index_list(raw: &str) -> anyhow::Result<Vec<usize>> {
     let parsed: IndexListResponse = serde_json::from_str(candidate)
         .map_err(|e| anyhow::anyhow!("no se pudo parsear la respuesta del proveedor como {{indices: [...]}}: {e}"))?;
     Ok(parsed.indices)
+}
+
+#[derive(Deserialize)]
+struct ScoredItemsResponse {
+    items: Vec<ScoredCandidate>,
+}
+
+/// Análogo a `extract_index_list` pero para el contrato de `curate_by_hint`
+/// (`{"items": [{"index", "score"}, ...]}`, puntaje absoluto — ver
+/// `CURATE_BY_HINT_SYSTEM_PROMPT`). `extract_index_list` queda intacto y
+/// lo sigue usando exclusivamente `curate_results`.
+pub(crate) fn extract_scored_list(raw: &str) -> anyhow::Result<Vec<ScoredCandidate>> {
+    let start = raw
+        .find('{')
+        .ok_or_else(|| anyhow::anyhow!("la respuesta del proveedor no contiene un objeto JSON"))?;
+    let end = raw
+        .rfind('}')
+        .ok_or_else(|| anyhow::anyhow!("la respuesta del proveedor no contiene un objeto JSON"))?;
+    anyhow::ensure!(end >= start, "delimitadores de JSON inválidos en la respuesta");
+    let candidate = &raw[start..=end];
+    let parsed: ScoredItemsResponse = serde_json::from_str(candidate)
+        .map_err(|e| anyhow::anyhow!("no se pudo parsear la respuesta del proveedor como {{items: [...]}}: {e}"))?;
+    Ok(parsed.items)
 }
 
 /// Intenta extraer el primer bloque `{...}` de un texto (algunos proveedores
@@ -222,5 +279,38 @@ mod tests {
     #[test]
     fn extract_index_list_rejects_object_without_indices_field() {
         assert!(extract_index_list(r#"{"other": [1, 2]}"#).is_err());
+    }
+
+    #[test]
+    fn extract_scored_list_parses_items_object() {
+        let raw = r#"{"items": [{"index": 2, "score": 90}, {"index": 0, "score": 40}]}"#;
+        assert_eq!(
+            extract_scored_list(raw).unwrap(),
+            vec![
+                ScoredCandidate { index: 2, score: 90 },
+                ScoredCandidate { index: 0, score: 40 },
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_scored_list_parses_empty_items() {
+        assert_eq!(extract_scored_list(r#"{"items": []}"#).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn extract_scored_list_strips_markdown_fence() {
+        let raw = "```json\n{\"items\": [{\"index\": 1, \"score\": 75}]}\n```";
+        assert_eq!(extract_scored_list(raw).unwrap(), vec![ScoredCandidate { index: 1, score: 75 }]);
+    }
+
+    #[test]
+    fn extract_scored_list_rejects_response_without_object() {
+        assert!(extract_scored_list("no hay ningún objeto acá").is_err());
+    }
+
+    #[test]
+    fn extract_scored_list_rejects_object_without_items_field() {
+        assert!(extract_scored_list(r#"{"indices": [1, 2]}"#).is_err());
     }
 }

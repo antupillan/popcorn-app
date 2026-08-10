@@ -32,7 +32,7 @@ export function IptvView({ onPlayChannel, onPlayRecording }: IptvViewProps) {
             onClick={() => setTab(t.id)}
             className={`rounded-t-md px-3 py-1.5 text-xs font-medium transition-colors ${
               tab === t.id
-                ? "border-b-2 border-sky-600 text-sky-600 dark:text-sky-400"
+                ? "border-b-2 border-[var(--accent)] text-[var(--accent)] dark:text-[var(--accent-fg)]"
                 : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
             }`}
           >
@@ -66,7 +66,12 @@ function ChannelsTab({ onPlayChannel }: Pick<IptvViewProps, "onPlayChannel">) {
     setLoading(true);
     api
       .listChannels()
-      .then(setChannels)
+      .then((fast) => {
+        setChannels(fast);
+        // Curación en segundo plano, nunca antes del render rápido — mismo
+        // criterio que OnlineLibraryTab (ver online_library.rs).
+        api.curateChannels(fast).then(setChannels).catch(() => {});
+      })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, []);
@@ -100,7 +105,7 @@ function ChannelsTab({ onPlayChannel }: Pick<IptvViewProps, "onPlayChannel">) {
 
   return (
     <div className="flex flex-col gap-2 p-4">
-      {message && <p className="text-xs text-sky-600 dark:text-sky-400">{message}</p>}
+      {message && <p className="text-xs text-[var(--accent)] dark:text-[var(--accent-fg)]">{message}</p>}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
         {channels.map((c) => {
           const key = `${c.source_id}:${c.url}`;
@@ -177,7 +182,7 @@ function SourcesTab() {
     <div className="flex flex-col gap-3 p-4">
       <button
         onClick={() => setModalOpen(true)}
-        className="self-start rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+        className="self-start rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--accent-hover)]"
       >
         + Agregar fuente
       </button>
@@ -260,6 +265,16 @@ function RecordingsTab({ onPlayRecording }: RecordingsTabProps) {
     }
   }
 
+  function play(r: RecordingInfo) {
+    // Duración real (started_at hasta stopped_at, o "ahora" si sigue
+    // grabando) — el manifest sintético de hls.js (VideoPlayer, kind
+    // "recording") la necesita real, no inventada, para no confundir su
+    // buffering.
+    const end = r.stopped_at ? new Date(r.stopped_at) : new Date();
+    const durationSeconds = Math.max(10, (end.getTime() - new Date(r.started_at).getTime()) / 1000);
+    onPlayRecording({ id: r.id, name: r.channel_name, durationSeconds });
+  }
+
   if (recordings.length === 0) {
     return (
       <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
@@ -269,59 +284,72 @@ function RecordingsTab({ onPlayRecording }: RecordingsTabProps) {
   }
 
   return (
-    <ul className="flex flex-col gap-2 p-4">
+    <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
       {recordings.map((r) => (
-        <li
+        <div
           key={r.id}
-          className="flex flex-col gap-1.5 rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900"
+          className="group flex flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
         >
-          <div className="flex items-center justify-between gap-2">
-            <p className="min-w-0 truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">
-              {r.channel_name}
-            </p>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <button
-                onClick={() => {
-                  // Duración real (started_at hasta stopped_at, o "ahora" si
-                  // sigue grabando) — el manifest sintético de hls.js
-                  // (VideoPlayer, kind "recording") la necesita real, no
-                  // inventada, para no confundir su buffering.
-                  const end = r.stopped_at ? new Date(r.stopped_at) : new Date();
-                  const durationSeconds = Math.max(
-                    10,
-                    (end.getTime() - new Date(r.started_at).getTime()) / 1000,
-                  );
-                  onPlayRecording({ id: r.id, name: r.channel_name, durationSeconds });
-                }}
-                className="rounded-md border border-sky-600 px-2 py-1 text-[11px] font-semibold text-sky-600 hover:bg-sky-600 hover:text-white dark:text-sky-400"
+          <div className="relative aspect-video bg-zinc-100 dark:bg-zinc-800">
+            <button
+              onClick={() => play(r)}
+              aria-label={`Reproducir ${r.channel_name}`}
+              className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/20"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                className="absolute h-8 w-8 text-zinc-400 opacity-40"
               >
-                Reproducir
-              </button>
+                <path d="M4 15a8 8 0 0 1 16 0M7.5 15a4.5 4.5 0 0 1 9 0" />
+                <circle cx="12" cy="15" r="1.25" fill="currentColor" stroke="none" />
+              </svg>
+              <svg viewBox="0 0 24 24" className="h-9 w-9 text-white/70 drop-shadow transition-opacity group-hover:opacity-100">
+                <path d="M8 5v14l11-7z" fill="currentColor" />
+              </svg>
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (r.status === "recording") {
+                  api.stopRecording(r.id).then(refresh);
+                } else {
+                  remove(r.id);
+                }
+              }}
+              disabled={busyId === r.id}
+              aria-label={r.status === "recording" ? "Detener grabación" : "Borrar grabación"}
+              className={`absolute right-1.5 top-1.5 rounded-full p-1.5 text-white/90 backdrop-blur-sm transition-colors disabled:opacity-50 ${
+                r.status === "recording" ? "bg-red-600/80 hover:bg-red-600" : "bg-black/50 hover:bg-red-600"
+              }`}
+            >
               {r.status === "recording" ? (
-                <button
-                  onClick={() => api.stopRecording(r.id)}
-                  className="rounded-md border border-red-300 px-2 py-1 text-[11px] text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
-                >
-                  Detener
-                </button>
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5">
+                  <rect x="6" y="6" width="12" height="12" fill="currentColor" />
+                </svg>
               ) : (
-                <button
-                  onClick={() => remove(r.id)}
-                  disabled={busyId === r.id}
-                  className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                >
-                  Quitar
-                </button>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 7h12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 .8 12.2A2 2 0 0 0 8.8 21h6.4a2 2 0 0 0 2-1.8L18 7"
+                  />
+                </svg>
               )}
+            </button>
+          </div>
+          <div className="p-2">
+            <p className="truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">{r.channel_name}</p>
+            <div className="flex items-center justify-between font-mono text-[10px] text-zinc-500 dark:text-zinc-400">
+              <span>{formatBytes(r.bytes_written)}</span>
+              <span>{RECORDING_STATUS_LABEL[r.status]}</span>
             </div>
+            {r.error && <p className="truncate text-[10px] text-red-500">{r.error}</p>}
           </div>
-          <div className="flex items-center justify-between font-mono text-[10px] text-zinc-500 dark:text-zinc-400">
-            <span>{formatBytes(r.bytes_written)}</span>
-            <span>{RECORDING_STATUS_LABEL[r.status]}</span>
-          </div>
-          {r.error && <p className="text-[10px] text-red-500">{r.error}</p>}
-        </li>
+        </div>
       ))}
-    </ul>
+    </div>
   );
 }

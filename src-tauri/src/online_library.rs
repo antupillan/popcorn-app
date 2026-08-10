@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
-use crate::ai::{commands::try_build_active_provider, curation};
+use crate::ai::{commands::try_build_active_provider, curation, AiProvider};
 use crate::commands::{add_archive_org_item_core, seed_archive_org_item_core, EngineState, HttpClient};
 use crate::db::Db;
 use crate::engine::{AddTorrentSource, TorrentEngine, TorrentInfo};
@@ -16,7 +16,7 @@ use crate::sources::{archive_org, public_domain_torrents};
 /// `source_type='archive_org'` (ninguno tiene fila propia en el CHECK, ver
 /// migración) porque los cuatro resuelven por identifier de archive.org —
 /// solo `kind` los distingue del lado del frontend/curación.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct OnlineItem {
     pub kind: String, // "archive_org" | "public_domain_torrents" | "blender_foundation" | "prelinger" | "feature_films"
     pub identifier: String,
@@ -74,27 +74,21 @@ fn archive_org_mediatype_filter(db: &Db) -> Result<Option<String>, String> {
 /// de terceros es mucho más lento (~13s medido en vivo contra ~1.5s de
 /// archive.org, ver sección "investigar lentitud" del plan): un solo
 /// comando esperando a ambas fuentes frenaba toda la pestaña Online detrás
-/// de la más lenta. El frontend dispara los dos comandos en paralelo sin
-/// esperar uno al otro y renderiza cada grupo apenas responde. Curación por
-/// IA (`curate_by_hint`, fail-open) se aplica según `curation_enabled`/
-/// `curation_hint` propios de archive_org, nunca a Blender Foundation
-/// (allowlist ya vetted a mano, ver `source_settings`). archive.org
-/// fallando se loguea y se saltea, no tira abajo a Blender (mismo criterio
-/// que `iptv::list_channels`).
+/// de la más lenta. archive.org fallando se loguea y se saltea, no tira
+/// abajo a Blender (mismo criterio que `iptv::list_channels`).
+///
+/// Sin curación acá a propósito — separada en `curate_online_items_inner`
+/// (comando aparte, ver abajo). Encontrado en vivo: con un proveedor de IA
+/// activo pero inalcanzable, curar síncrono acá significaba hasta varios
+/// minutos de espera antes de mostrar nada, aunque el fetch en sí tarda
+/// ~1-2s — la pestaña Online debe cargar igual de rápido con o sin IA
+/// configurada, la curación es una mejora que llega después, no un gate.
 async fn browse_online_library_fast_inner(
     http: &reqwest::Client,
     db: &Db,
 ) -> Result<Vec<OnlineItem>, String> {
     let mediatype_filter = archive_org_mediatype_filter(db)?;
-    let (archive_org_enabled, archive_org_hint) = curation_settings_for(db, "archive_org")?;
-    let (prelinger_enabled, prelinger_hint) = curation_settings_for(db, "prelinger")?;
-    let (feature_films_enabled, feature_films_hint) = curation_settings_for(db, "feature_films")?;
-    let provider = try_build_active_provider(db)?;
 
-    // Las tres fuentes de archive.org (browse general + dos colecciones
-    // curadas) son requests independientes al mismo sitio, ~1-2s cada una
-    // medido en vivo — correrlas en paralelo mantiene el grupo "rápido"
-    // rápido de verdad en vez de sumar sus latencias.
     let (archive_org_result, prelinger_result, feature_films_result) = tokio::join!(
         archive_org::browse_movies(http, mediatype_filter.as_deref()),
         archive_org::browse_prelinger(http),
@@ -102,70 +96,16 @@ async fn browse_online_library_fast_inner(
     );
 
     let mut all = Vec::new();
-
     match archive_org_result {
-        Ok(items) => {
-            let mut items: Vec<OnlineItem> = items
-                .into_iter()
-                .map(|i| online_item_from_archive_org("archive_org", i))
-                .collect();
-            if archive_org_enabled {
-                if let Some(provider) = &provider {
-                    items = curation::curate_by_hint(
-                        provider.as_ref(),
-                        items,
-                        |i| i.title.as_str(),
-                        archive_org_hint.as_deref(),
-                    )
-                    .await;
-                }
-            }
-            all.append(&mut items);
-        }
+        Ok(items) => all.extend(items.into_iter().map(|i| online_item_from_archive_org("archive_org", i))),
         Err(e) => eprintln!("[popcorn] fuente Online 'archive_org' falló: {e}"),
     }
-
     match prelinger_result {
-        Ok(items) => {
-            let mut items: Vec<OnlineItem> = items
-                .into_iter()
-                .map(|i| online_item_from_archive_org("prelinger", i))
-                .collect();
-            if prelinger_enabled {
-                if let Some(provider) = &provider {
-                    items = curation::curate_by_hint(
-                        provider.as_ref(),
-                        items,
-                        |i| i.title.as_str(),
-                        prelinger_hint.as_deref(),
-                    )
-                    .await;
-                }
-            }
-            all.append(&mut items);
-        }
+        Ok(items) => all.extend(items.into_iter().map(|i| online_item_from_archive_org("prelinger", i))),
         Err(e) => eprintln!("[popcorn] fuente Online 'prelinger' falló: {e}"),
     }
-
     match feature_films_result {
-        Ok(items) => {
-            let mut items: Vec<OnlineItem> = items
-                .into_iter()
-                .map(|i| online_item_from_archive_org("feature_films", i))
-                .collect();
-            if feature_films_enabled {
-                if let Some(provider) = &provider {
-                    items = curation::curate_by_hint(
-                        provider.as_ref(),
-                        items,
-                        |i| i.title.as_str(),
-                        feature_films_hint.as_deref(),
-                    )
-                    .await;
-                }
-            }
-            all.append(&mut items);
-        }
+        Ok(items) => all.extend(items.into_iter().map(|i| online_item_from_archive_org("feature_films", i))),
         Err(e) => eprintln!("[popcorn] fuente Online 'feature_films' falló: {e}"),
     }
 
@@ -178,6 +118,134 @@ async fn browse_online_library_fast_inner(
     );
 
     Ok(all)
+}
+
+/// Identidad estable de un `OnlineItem` para el caché de curación/ping —
+/// `kind` distingue fuentes que comparten `identifier` (ver comentario del
+/// struct), así que ninguno de los dos solo alcanza.
+fn online_item_key(item: &OnlineItem) -> String {
+    format!("{}:{}", item.kind, item.identifier)
+}
+
+/// URL a pinguear para confirmar disponibilidad — Public Domain Torrents
+/// ya trae la URL de descarga resuelta como `identifier`; el resto
+/// (archive.org y sus tres variantes) resuelve al `.torrent` real que
+/// `add_archive_org_item_core` terminaría descargando.
+fn ping_target_for(item: &OnlineItem) -> String {
+    if item.kind == "public_domain_torrents" {
+        item.identifier.clone()
+    } else {
+        archive_org::torrent_url(&item.identifier)
+    }
+}
+
+/// Cura (si `curation_enabled` y hay proveedor activo) y pinguea
+/// disponibilidad — en paralelo, no una tras otra — un grupo de ítems de
+/// una misma fuente (`source_id` = mismo id que `source_settings`). El
+/// ping corre siempre, incluso con `curation_enabled=0` (ej.
+/// `blender_foundation`, allowlist vetted a mano — igual puede
+/// desaparecer de archive.org con el tiempo). Ítems con
+/// `consecutive_ping_failures` sobre el umbral quedan afuera del
+/// resultado.
+async fn curate_and_ping_bucket(
+    db: &Db,
+    http: &reqwest::Client,
+    ping_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+    source_id: &str,
+    curation_enabled: bool,
+    provider: Option<&dyn AiProvider>,
+    items: Vec<OnlineItem>,
+    hint: Option<&str>,
+) -> Result<Vec<OnlineItem>, String> {
+    if items.is_empty() {
+        return Ok(items);
+    }
+
+    let ping_targets: Vec<(String, String)> =
+        items.iter().map(|i| (online_item_key(i), ping_target_for(i))).collect();
+    let http_for_ping = http.clone();
+    let ping_fut = crate::availability_ping::ping_many(ping_targets, ping_semaphore, move |url| {
+        let client = http_for_ping.clone();
+        async move { crate::availability_ping::ping_ok(&client, &url).await }
+    });
+
+    let curate_fut = async {
+        match provider {
+            Some(provider) if curation_enabled => {
+                curation::curate_by_hint(db, source_id, provider, items, |i: &OnlineItem| i.title.as_str(), online_item_key, hint)
+                    .await
+            }
+            _ => Ok(items),
+        }
+    };
+
+    let (ping_results, curated) = tokio::join!(ping_fut, curate_fut);
+    crate::availability_ping::record_ping_results(db, source_id, &ping_results)?;
+    let mut curated = curated?;
+    let failure_counts = crate::availability_ping::ping_failure_counts(db, source_id)?;
+    curated.retain(|i| {
+        failure_counts.get(&online_item_key(i)).copied().unwrap_or(0)
+            < crate::availability_ping::CONSECUTIVE_FAILURES_THRESHOLD
+    });
+    Ok(curated)
+}
+
+/// Re-cura una lista de `OnlineItem` ya obtenida (vía `browse_online_library`)
+/// — el frontend la llama después de renderizar el resultado rápido sin
+/// curar, sin bloquear esa primera carga. Las cuatro familias de
+/// archive.org (`archive_org`/`prelinger`/`feature_films`/
+/// `blender_foundation`, la única que llega acá aparte de las tres
+/// explícitas — Public Domain Torrents tiene su propio comando, ver
+/// `browse_public_domain_torrents_inner`) corren en paralelo vía
+/// `curate_and_ping_bucket`, compartiendo un solo semáforo de ping: cada
+/// una usando el suyo propio significaba hasta 4x `PING_CONCURRENCY`
+/// conexiones simultáneas reales contra archive.org — verificado en vivo
+/// que eso alcanza para gatillar throttling del origen que ni los
+/// reintentos de `ping_ok` superan (Mandato 1, no hipótesis).
+async fn curate_online_items_inner(db: &Db, http: &reqwest::Client, items: Vec<OnlineItem>) -> Result<Vec<OnlineItem>, String> {
+    let provider = try_build_active_provider(db)?;
+    let ping_semaphore = crate::availability_ping::new_ping_semaphore();
+
+    let mut archive_org_items = Vec::new();
+    let mut prelinger_items = Vec::new();
+    let mut feature_films_items = Vec::new();
+    let mut blender_foundation_items = Vec::new();
+    for item in items {
+        match item.kind.as_str() {
+            "archive_org" => archive_org_items.push(item),
+            "prelinger" => prelinger_items.push(item),
+            "feature_films" => feature_films_items.push(item),
+            _ => blender_foundation_items.push(item),
+        }
+    }
+
+    let (archive_org_enabled, archive_org_hint) = curation_settings_for(db, "archive_org")?;
+    let (prelinger_enabled, prelinger_hint) = curation_settings_for(db, "prelinger")?;
+    let (feature_films_enabled, feature_films_hint) = curation_settings_for(db, "feature_films")?;
+    let (blender_foundation_enabled, blender_foundation_hint) = curation_settings_for(db, "blender_foundation")?;
+
+    let (archive_org_items, prelinger_items, feature_films_items, blender_foundation_items) = tokio::join!(
+        curate_and_ping_bucket(db, http, ping_semaphore.clone(), "archive_org", archive_org_enabled, provider.as_deref(), archive_org_items, archive_org_hint.as_deref()),
+        curate_and_ping_bucket(db, http, ping_semaphore.clone(), "prelinger", prelinger_enabled, provider.as_deref(), prelinger_items, prelinger_hint.as_deref()),
+        curate_and_ping_bucket(db, http, ping_semaphore.clone(), "feature_films", feature_films_enabled, provider.as_deref(), feature_films_items, feature_films_hint.as_deref()),
+        curate_and_ping_bucket(db, http, ping_semaphore, "blender_foundation", blender_foundation_enabled, provider.as_deref(), blender_foundation_items, blender_foundation_hint.as_deref()),
+    );
+
+    let mut all = Vec::new();
+    all.extend(archive_org_items?);
+    all.extend(prelinger_items?);
+    all.extend(feature_films_items?);
+    all.extend(blender_foundation_items?);
+    Ok(all)
+}
+
+#[tauri::command]
+pub async fn curate_online_library(
+    http: State<'_, HttpClient>,
+    db: State<'_, Db>,
+    items: Vec<OnlineItem>,
+) -> Result<Vec<OnlineItem>, String> {
+    curate_online_items_inner(&db, &http.0, items).await
 }
 
 /// Public Domain Torrents solo — a diferencia del grupo rápido, un fallo
@@ -194,19 +262,18 @@ async fn browse_public_domain_torrents_inner(
     let items = public_domain_torrents::browse(http)
         .await
         .map_err(|e| e.to_string())?;
-    let mut items: Vec<OnlineItem> = items.into_iter().map(online_item_from_pdt).collect();
-    if pdt_enabled {
-        if let Some(provider) = &provider {
-            items = curation::curate_by_hint(
-                provider.as_ref(),
-                items,
-                |i| i.title.as_str(),
-                pdt_hint.as_deref(),
-            )
-            .await;
-        }
-    }
-    Ok(items)
+    let items: Vec<OnlineItem> = items.into_iter().map(online_item_from_pdt).collect();
+    curate_and_ping_bucket(
+        db,
+        http,
+        crate::availability_ping::new_ping_semaphore(),
+        "public_domain_torrents",
+        pdt_enabled,
+        provider.as_deref(),
+        items,
+        pdt_hint.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -428,7 +495,7 @@ mod tests {
         let db = migrated_db();
         let tmp = std::env::temp_dir().join(format!("popcorn-online-lib-e2e-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
-        let embedded = crate::engine::embedded_rqbit::EmbeddedRqbit::new(tmp).await.unwrap();
+        let embedded = crate::engine::embedded_rqbit::EmbeddedRqbit::new_standalone(tmp).await.unwrap();
         let engine: Arc<dyn TorrentEngine> = Arc::new(embedded);
         let http = reqwest::Client::new();
 
@@ -457,5 +524,123 @@ mod tests {
             .unwrap();
         assert_eq!(source_type, "public_domain_torrents");
         assert_eq!(title, "Thirteenth Guest");
+    }
+
+    fn item(kind: &str, identifier: &str) -> OnlineItem {
+        OnlineItem {
+            kind: kind.to_string(),
+            identifier: identifier.to_string(),
+            title: format!("título de {identifier}"),
+            year: None,
+            license: None,
+            thumbnail_url: None,
+        }
+    }
+
+    #[test]
+    fn ping_target_for_uses_identifier_directly_for_pdt_and_torrent_url_for_the_rest() {
+        let pdt = item("public_domain_torrents", "http://example.org/x.torrent");
+        assert_eq!(ping_target_for(&pdt), "http://example.org/x.torrent");
+
+        let ao = item("archive_org", "sita_sings_the_blues");
+        assert_eq!(ping_target_for(&ao), archive_org::torrent_url("sita_sings_the_blues"));
+
+        let blender = item("blender_foundation", "sintel");
+        assert_eq!(ping_target_for(&blender), archive_org::torrent_url("sintel"));
+    }
+
+    #[test]
+    fn online_item_key_combines_kind_and_identifier() {
+        let i = item("prelinger", "abc123");
+        assert_eq!(online_item_key(&i), "prelinger:abc123");
+    }
+
+    struct ScoredHintProvider(i32);
+    #[async_trait]
+    impl AiProvider for ScoredHintProvider {
+        fn name(&self) -> &'static str {
+            "fake-scored"
+        }
+        async fn parse_query(&self, _text: &str) -> anyhow::Result<crate::ai::StructuredQuery> {
+            unreachable!("no lo usa este test")
+        }
+        async fn curate_results(
+            &self,
+            _query: &crate::ai::StructuredQuery,
+            _candidates: &[String],
+        ) -> anyhow::Result<Vec<usize>> {
+            unreachable!("no lo usa este test")
+        }
+        async fn curate_by_hint(
+            &self,
+            candidates: &[String],
+            _hint: Option<&str>,
+        ) -> anyhow::Result<Vec<crate::ai::ScoredCandidate>> {
+            Ok((0..candidates.len())
+                .map(|i| crate::ai::ScoredCandidate { index: i, score: self.0 })
+                .collect())
+        }
+    }
+
+    // Puerto sin listener en loopback: el ping falla rápido, sin red real
+    // ni DNS — a estos tests no les importa el resultado del ping salvo
+    // el que lo prueba explícitamente.
+    fn unroutable(identifier: &str) -> OnlineItem {
+        item("public_domain_torrents", &format!("http://127.0.0.1:1/{identifier}"))
+    }
+
+    #[tokio::test]
+    async fn curate_and_ping_bucket_pings_even_with_curation_disabled() {
+        let db = migrated_db();
+        let http = reqwest::Client::new();
+        let i = unroutable("a");
+        let key = online_item_key(&i);
+
+        let result = curate_and_ping_bucket(&db, &http, crate::availability_ping::new_ping_semaphore(), "src", false, None, vec![i], None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 1, "sin curación IA el ítem pasa igual, solo se pinguea");
+        let counts = crate::availability_ping::ping_failure_counts(&db, "src").unwrap();
+        assert_eq!(counts.get(&key), Some(&1), "el ping debe haber corrido y registrado la falla");
+    }
+
+    #[tokio::test]
+    async fn curate_and_ping_bucket_drops_items_over_the_ping_failure_threshold() {
+        let db = migrated_db();
+        let http = reqwest::Client::new();
+        let i = unroutable("dead");
+        let key = online_item_key(&i);
+        crate::availability_ping::record_ping_results(&db, "src", &vec![(key, false); 5]).unwrap();
+
+        let result = curate_and_ping_bucket(&db, &http, crate::availability_ping::new_ping_semaphore(), "src", false, None, vec![i], None)
+            .await
+            .unwrap();
+
+        assert!(result.is_empty(), "un ítem con 5 fallas de ping consecutivas debe quedar afuera");
+    }
+
+    #[tokio::test]
+    async fn curate_and_ping_bucket_curates_and_caches_when_enabled() {
+        let db = migrated_db();
+        let http = reqwest::Client::new();
+        let provider = ScoredHintProvider(88);
+        let i = item("archive_org", "some_movie");
+        let key = online_item_key(&i);
+
+        let result = curate_and_ping_bucket(&db, &http, crate::availability_ping::new_ping_semaphore(), "archive_org", true, Some(&provider), vec![i], Some("crit"))
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        let conn = db.0.lock().unwrap();
+        let score: Option<i64> = conn
+            .query_row(
+                "SELECT score FROM curation_cache WHERE source_id = 'archive_org' AND item_key = ?1",
+                [&key],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(score, Some(88));
     }
 }

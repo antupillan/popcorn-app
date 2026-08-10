@@ -4,7 +4,8 @@ use serde_json::json;
 
 use super::{
     build_curation_user_text, build_hint_curation_user_text, extract_index_list,
-    extract_structured_query, AiProvider, StructuredQuery, CURATE_BY_HINT_SYSTEM_PROMPT,
+    extract_scored_list, extract_structured_query, AiProvider, ScoredCandidate, StructuredQuery,
+    CURATE_BY_HINT_EXAMPLE_ASSISTANT, CURATE_BY_HINT_EXAMPLE_USER, CURATE_BY_HINT_SYSTEM_PROMPT,
     CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
 };
 
@@ -61,6 +62,9 @@ fn parse_response_body(body: &str) -> anyhow::Result<StructuredQuery> {
 /// Igual que `parse_response_body` pero extrayendo una lista de índices en
 /// vez de un `StructuredQuery` — separado para poder probar el parseo del
 /// formato real de Chat Completions con una fixture, sin necesitar key.
+/// Usado solo por `curate_results` — `curate_by_hint` usa
+/// `parse_hint_curation_response_body` (contrato distinto, puntaje
+/// absoluto en vez de orden relativo, ver `ai::ScoredCandidate`).
 fn parse_curation_response_body(body: &str) -> anyhow::Result<Vec<usize>> {
     let resp: ChatCompletionResponse = serde_json::from_str(body)?;
     let raw = resp
@@ -70,6 +74,19 @@ fn parse_curation_response_body(body: &str) -> anyhow::Result<Vec<usize>> {
         .map(|c| c.message.content)
         .ok_or_else(|| anyhow::anyhow!("el proveedor no devolvió ningún choice"))?;
     extract_index_list(&raw)
+}
+
+/// Igual patrón que `parse_curation_response_body` pero para el contrato
+/// `{"items": [{"index", "score"}, ...]}` de `curate_by_hint`.
+fn parse_hint_curation_response_body(body: &str) -> anyhow::Result<Vec<ScoredCandidate>> {
+    let resp: ChatCompletionResponse = serde_json::from_str(body)?;
+    let raw = resp
+        .choices
+        .into_iter()
+        .next()
+        .map(|c| c.message.content)
+        .ok_or_else(|| anyhow::anyhow!("el proveedor no devolvió ningún choice"))?;
+    extract_scored_list(&raw)
 }
 
 #[async_trait]
@@ -135,13 +152,15 @@ impl AiProvider for OpenAiCompatibleProvider {
         &self,
         candidates: &[String],
         hint: Option<&str>,
-    ) -> anyhow::Result<Vec<usize>> {
+    ) -> anyhow::Result<Vec<ScoredCandidate>> {
         let url = format!("{}/chat/completions", self.base_url);
         let text = build_hint_curation_user_text(candidates, hint);
         let body = json!({
             "model": self.model,
             "messages": [
                 {"role": "system", "content": CURATE_BY_HINT_SYSTEM_PROMPT},
+                {"role": "user", "content": CURATE_BY_HINT_EXAMPLE_USER},
+                {"role": "assistant", "content": CURATE_BY_HINT_EXAMPLE_ASSISTANT},
                 {"role": "user", "content": text}
             ],
             "response_format": {"type": "json_object"}
@@ -157,7 +176,7 @@ impl AiProvider for OpenAiCompatibleProvider {
         .error_for_status()?
         .text()
         .await?;
-        parse_curation_response_body(&raw_body)
+        parse_hint_curation_response_body(&raw_body)
     }
 }
 
@@ -209,6 +228,33 @@ mod tests {
     fn curation_errors_when_no_choices() {
         let body = r#"{"choices": []}"#;
         assert!(parse_curation_response_body(body).is_err());
+    }
+
+    #[test]
+    fn parses_real_shaped_hint_curation_response() {
+        let body = r#"{
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"items\": [{\"index\": 2, \"score\": 90}, {\"index\": 0, \"score\": 40}]}"
+                },
+                "finish_reason": "stop"
+            }]
+        }"#;
+        assert_eq!(
+            parse_hint_curation_response_body(body).unwrap(),
+            vec![
+                ScoredCandidate { index: 2, score: 90 },
+                ScoredCandidate { index: 0, score: 40 },
+            ]
+        );
+    }
+
+    #[test]
+    fn hint_curation_errors_when_no_choices() {
+        let body = r#"{"choices": []}"#;
+        assert!(parse_hint_curation_response_body(body).is_err());
     }
 
     #[test]

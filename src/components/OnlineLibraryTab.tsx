@@ -31,7 +31,23 @@ export function OnlineLibraryTab({ mediaItems, onPlayMedia, onPlayOnline, onAdde
     setLoading(true);
     api
       .browseOnlineLibrary()
-      .then(setItems)
+      .then((fastItems) => {
+        setItems(fastItems);
+        // Curación en segundo plano, nunca antes del render rápido — con
+        // un proveedor de IA inalcanzable puede tardar bastante, y no debe
+        // demorar la carga inicial (ver online_library.rs). Preserva
+        // cualquier ítem de Public Domain Torrents que ya haya llegado
+        // para cuando esto resuelva, en vez de pisarlo.
+        api
+          .curateOnlineLibrary(fastItems)
+          .then((curated) => {
+            setItems((prev) => [
+              ...curated,
+              ...prev.filter((i) => i.kind === "public_domain_torrents"),
+            ]);
+          })
+          .catch(() => {});
+      })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
 
@@ -99,9 +115,9 @@ export function OnlineLibraryTab({ mediaItems, onPlayMedia, onPlayOnline, onAdde
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="Buscar por nombre…"
-        className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-sky-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+        className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[var(--accent-hover)] focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
       />
-      {message && <p className="text-xs text-sky-600 dark:text-sky-400">{message}</p>}
+      {message && <p className="text-xs text-[var(--accent)] dark:text-[var(--accent-fg)]">{message}</p>}
       {filtered.length === 0 && (
         <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
           Sin resultados para "{query}".
@@ -161,7 +177,7 @@ export function OnlineLibraryTab({ mediaItems, onPlayMedia, onPlayOnline, onAdde
               <div className="flex flex-1 flex-col gap-1 p-2">
                 <p className="truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">{item.title}</p>
                 <div className="flex items-center justify-between">
-                  <span className="rounded-full bg-sky-600/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-400">
+                  <span className="rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent)] dark:text-[var(--accent-fg)]">
                     {KIND_LABEL[item.kind]}
                   </span>
                   {item.year && <span className="text-[10px] text-zinc-500">{item.year}</span>}

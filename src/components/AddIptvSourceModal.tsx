@@ -43,7 +43,7 @@ export function AddIptvSourceModal({ onClose, onAdded }: AddIptvSourceModalProps
               onClick={() => setTab(t.id)}
               className={`rounded-t-md px-3 py-1.5 text-xs font-medium transition-colors ${
                 tab === t.id
-                  ? "border-b-2 border-sky-600 text-sky-600 dark:text-sky-400"
+                  ? "border-b-2 border-[var(--accent)] text-[var(--accent)] dark:text-[var(--accent-fg)]"
                   : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
               }`}
             >
@@ -102,19 +102,19 @@ function UrlTab({ onAdded, onClose }: TabProps) {
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="Nombre de la fuente"
-        className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-sky-500 dark:border-zinc-700 dark:bg-zinc-950"
+        className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-[var(--accent-hover)] dark:border-zinc-700 dark:bg-zinc-950"
       />
       <input
         value={playlistUrl}
         onChange={(e) => setPlaylistUrl(e.target.value)}
         placeholder="https://.../lista.m3u8"
-        className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-sky-500 dark:border-zinc-700 dark:bg-zinc-950"
+        className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-[var(--accent-hover)] dark:border-zinc-700 dark:bg-zinc-950"
       />
       {error && <p className="text-xs text-red-500">{error}</p>}
       <button
         type="submit"
         disabled={loading}
-        className="self-end rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+        className="self-end rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
       >
         {loading ? "Agregando…" : "Agregar"}
       </button>
@@ -151,9 +151,9 @@ function FileTab({ onAdded, onClose }: TabProps) {
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="Nombre de la fuente (opcional, usa el del archivo si se deja vacío)"
-        className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-sky-500 dark:border-zinc-700 dark:bg-zinc-950"
+        className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-[var(--accent-hover)] dark:border-zinc-700 dark:bg-zinc-950"
       />
-      <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed border-zinc-300 px-4 py-8 text-center text-xs text-zinc-500 hover:border-sky-500 hover:text-sky-600 dark:border-zinc-700 dark:hover:border-sky-500">
+      <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed border-zinc-300 px-4 py-8 text-center text-xs text-zinc-500 hover:border-[var(--accent-hover)] hover:text-[var(--accent)] dark:border-zinc-700 dark:hover:border-[var(--accent-hover)]">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-6 w-6">
           <path d="M12 16V4m0 0L7 9m5-5 5 5M5 20h14" />
         </svg>
