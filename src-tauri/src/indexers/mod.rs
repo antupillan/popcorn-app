@@ -1,10 +1,11 @@
 mod parse;
+pub mod torrent_health;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::ai::{commands::try_build_active_provider, curation, StructuredQuery};
+use crate::ai::{commands::try_build_active_provider, AiProvider};
 use crate::db::Db;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -90,10 +91,6 @@ pub async fn add_indexer(
             (&id, &name, &search_url_template, &result_format, &json_paths_raw),
         )
         .map_err(|e| e.to_string())?;
-        // Toda fuente de búsqueda necesita su fila de curación (ver
-        // source_settings) — sin esto, list_source_settings no la lista.
-        conn.execute("INSERT INTO source_settings (id) VALUES (?1)", [&id])
-            .map_err(|e| e.to_string())?;
     }
     Ok(Indexer {
         id,
@@ -141,66 +138,103 @@ pub async fn test_indexer(
         .map_err(|e| e.to_string())
 }
 
-/// Lee `source_settings.curation_enabled` para una fuente puntual (acá
-/// siempre un `indexers.id`) — curación es config por fuente, no global, así
-/// que se consulta por cada indexer en vez de una sola vez para todos.
-fn curation_enabled_for(db: &Db, source_id: &str) -> Result<bool, String> {
+fn enabled_indexers(db: &Db) -> Result<Vec<Indexer>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let enabled: i64 = conn
-        .query_row(
-            "SELECT curation_enabled FROM source_settings WHERE id = ?1",
-            [source_id],
-            |r| r.get(0),
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, search_url_template, result_format, json_paths, enabled \
+             FROM indexers WHERE enabled = 1",
         )
         .map_err(|e| e.to_string())?;
-    Ok(enabled != 0)
+    let rows = stmt
+        .query_map([], row_to_indexer)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
 }
 
 /// Despacha la query contra todos los indexers habilitados del usuario y
 /// fusiona resultados. Un indexer que falla no tira abajo a los demás —
-/// se omite y sigue con el resto. Curación por IA (si el indexer la tiene
-/// activada y hay un proveedor activo — fail-open si no) se aplica por
-/// indexer antes de fusionar, no sobre el resultado ya mezclado.
+/// se omite y sigue con el resto. Sin curación por IA a propósito
+/// (Mandato, aclarado en vivo por el usuario): curación es para ordenar/
+/// filtrar un catálogo ya cargado en un grid (archive.org, YouTube, IPTV),
+/// no para una búsqueda puntual que el usuario tipea — mandar cada
+/// resultado de acá a un proveedor de IA en cada búsqueda solo agregaba
+/// latencia real (visto en vivo: Nyaa devuelve 20-75 ítems por página,
+/// todos en una sola llamada síncrona) sin que el usuario lo hubiera
+/// pedido. Buscar "más amplio" con IA es una acción aparte y explícita
+/// (ver `search_indexers_with_ai`), no algo que la búsqueda cruda haga
+/// por su cuenta.
 #[tauri::command]
 pub async fn search_indexers(
     http: State<'_, crate::commands::HttpClient>,
     db: State<'_, Db>,
     query: String,
 ) -> Result<Vec<IndexerResult>, String> {
-    let enabled: Vec<Indexer> = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, name, search_url_template, result_format, json_paths, enabled \
-                 FROM indexers WHERE enabled = 1",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], row_to_indexer)
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
-        rows
-    };
-
-    let provider = try_build_active_provider(&db)?;
-    let sq = StructuredQuery { title: query.clone(), ..Default::default() };
-
+    let enabled = enabled_indexers(&db)?;
     let mut all = Vec::new();
     for indexer in &enabled {
         match search_one(&http.0, indexer, &query).await {
-            Ok(mut results) => {
-                if let Some(provider) = &provider {
-                    if curation_enabled_for(&db, &indexer.id)? {
-                        results = curation::curate(provider.as_ref(), &sq, results, |r| r.title.as_str()).await;
-                    }
-                }
-                all.append(&mut results);
-            }
+            Ok(mut results) => all.append(&mut results),
             Err(e) => eprintln!("[popcorn] indexer '{}' falló: {e}", indexer.name),
         }
     }
     Ok(all)
+}
+
+/// Separado del comando para poder testear sin `State` (mismo patrón que
+/// `search_added_content_with_ai_inner` en `ai/commands.rs`). Acción
+/// explícita del usuario (no un enriquecimiento pasivo como la curación
+/// de grids) — falla claro sin proveedor activo, no cae en silencio a la
+/// búsqueda cruda. La query original siempre entra al set de términos,
+/// nunca depende 100% de lo que devuelva la IA. Dedup por `magnet`: el
+/// mismo torrent puede aparecer con varios términos distintos.
+async fn search_indexers_with_ai_inner(
+    http: &reqwest::Client,
+    provider: Option<&dyn AiProvider>,
+    enabled: &[Indexer],
+    query: &str,
+) -> Result<Vec<IndexerResult>, String> {
+    let provider = provider
+        .ok_or_else(|| "no hay ningún proveedor de IA activo — configura uno en Ajustes".to_string())?;
+    let broadened = provider.broaden_query(query).await.map_err(|e| format!("[{}] {e}", provider.name()))?;
+
+    let mut terms = vec![query.to_string()];
+    for t in broadened {
+        if !terms.contains(&t) {
+            terms.push(t);
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut all = Vec::new();
+    for indexer in enabled {
+        for term in &terms {
+            match search_one(http, indexer, term).await {
+                Ok(results) => {
+                    for r in results {
+                        if seen.insert(r.magnet.clone()) {
+                            all.push(r);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[popcorn] indexer '{}' falló (término '{term}'): {e}", indexer.name),
+            }
+        }
+    }
+    Ok(all)
+}
+
+#[tauri::command]
+pub async fn search_indexers_with_ai(
+    http: State<'_, crate::commands::HttpClient>,
+    db: State<'_, Db>,
+    query: String,
+) -> Result<Vec<IndexerResult>, String> {
+    let enabled = enabled_indexers(&db)?;
+    let provider = try_build_active_provider(&db)?;
+    search_indexers_with_ai_inner(&http.0, provider.as_deref(), &enabled, &query).await
 }
 
 async fn search_one(
@@ -256,5 +290,53 @@ mod tests {
             assert!(!r.title.is_empty());
             assert_eq!(r.source_indexer, "Nyaa (test)");
         }
+    }
+
+    #[tokio::test]
+    async fn search_indexers_with_ai_fails_explicitly_without_active_provider() {
+        let client = reqwest::Client::new();
+        let result = search_indexers_with_ai_inner(&client, None, &[], "one piece").await;
+        assert!(result.is_err(), "sin proveedor activo debe fallar explícito, no caer en silencio a la búsqueda cruda");
+    }
+
+    #[tokio::test]
+    async fn search_indexers_with_ai_returns_empty_without_indexers_but_still_calls_the_provider() {
+        struct FakeProvider;
+        #[async_trait::async_trait]
+        impl AiProvider for FakeProvider {
+            fn name(&self) -> &'static str {
+                "fake"
+            }
+            async fn parse_query(&self, _text: &str) -> anyhow::Result<crate::ai::StructuredQuery> {
+                unreachable!("no lo usa este test")
+            }
+            async fn curate_results(
+                &self,
+                _query: &crate::ai::StructuredQuery,
+                _candidates: &[String],
+            ) -> anyhow::Result<Vec<usize>> {
+                unreachable!("no lo usa este test")
+            }
+            async fn curate_by_hint(
+                &self,
+                _candidates: &[String],
+                _hint: Option<&str>,
+            ) -> anyhow::Result<Vec<crate::ai::ScoredCandidate>> {
+                unreachable!("no lo usa este test")
+            }
+            async fn translate(&self, _texts: &[String], _target_lang: &str) -> anyhow::Result<Vec<String>> {
+                unreachable!("no lo usa este test")
+            }
+            async fn broaden_query(&self, query: &str) -> anyhow::Result<Vec<String>> {
+                assert_eq!(query, "one piece");
+                Ok(vec!["ワンピース".to_string()])
+            }
+        }
+
+        let client = reqwest::Client::new();
+        let result = search_indexers_with_ai_inner(&client, Some(&FakeProvider), &[], "one piece")
+            .await
+            .expect("con proveedor activo, sin indexers habilitados no debe fallar");
+        assert!(result.is_empty(), "sin indexers habilitados no hay dónde buscar los términos ampliados");
     }
 }

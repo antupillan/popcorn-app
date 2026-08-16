@@ -191,7 +191,7 @@ struct MetadataFile {
     format: Option<String>,
 }
 
-const PLAYABLE_FORMATS: &[&str] = &["h.264", "512kb mp4", "mpeg4"];
+const PLAYABLE_FORMATS: &[&str] = &["h.264", "512kb mpeg4", "mpeg4"];
 
 /// Fallback HTTP directo (ver TorrentEngine::register_http_fallback): la
 /// mayoría de los .torrent de archive.org dependen de webseeds BEP19 que
@@ -249,6 +249,40 @@ pub async fn fetch_torrent_bytes(
         .error_for_status()
         .with_context(|| format!("{url} respondió con error"))?;
     Ok(resp.bytes().await?.to_vec())
+}
+
+/// Igual que `fetch_torrent_bytes`, pero cachea el `.torrent` en disco (la
+/// metadata, KBs — no el video) para no depender de la red en cada
+/// "sanación" de un ítem que ya se descargó antes. Bug real: el motor
+/// embebido no persiste su sesión entre reinicios (ver
+/// `commands::heal_media_item`), así que sin esto cada reinicio de la app
+/// volvía a pedirle el `.torrent` a archive.org aunque el video ya
+/// estuviera completo en disco — si el origen está caído (visto en vivo),
+/// eso bloquea la reproducción de algo que ya tenías. `cache_dir` es
+/// `None` para motores que no exponen un directorio de descargas propio
+/// (ver `TorrentEngine::downloads_dir`) — en ese caso, sin caché, mismo
+/// comportamiento que antes.
+pub async fn fetch_torrent_bytes_cached(
+    client: &reqwest::Client,
+    identifier: &str,
+    cache_dir: Option<&std::path::Path>,
+) -> anyhow::Result<Vec<u8>> {
+    let Some(dir) = cache_dir else {
+        return fetch_torrent_bytes(client, identifier).await;
+    };
+    let cache_path = dir.join(".torrent_cache").join(format!("{identifier}.torrent"));
+    if let Ok(cached) = tokio::fs::read(&cache_path).await {
+        return Ok(cached);
+    }
+    let bytes = fetch_torrent_bytes(client, identifier).await?;
+    if let Some(parent) = cache_path.parent() {
+        // Best-effort: si no se puede escribir el caché (permisos, disco
+        // lleno), no es motivo para fallar la operación real — solo
+        // significa que la próxima sanación va a volver a pedirlo por red.
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let _ = tokio::fs::write(&cache_path, &bytes).await;
+    Ok(bytes)
 }
 
 /// Un archivo dentro de un `.torrent` de archive.org, con su ruta de
@@ -324,9 +358,121 @@ pub fn resolve_torrent_files(torrent_bytes: &[u8]) -> anyhow::Result<Vec<Torrent
         .collect()
 }
 
+/// Extensiones de video real, en orden de preferencia (mejor primero) —
+/// solo como desempate cuando no hay un archivo cuyo nombre (sin
+/// extensión) coincida exacto con `identifier`, que es la convención real
+/// de archive.org para "el" derivado principal.
+const VIDEO_EXTENSIONS_BY_PREFERENCE: &[&str] = &["mp4", "avi", "mpeg", "mpg", "ogv", "mkv", "webm", "mov"];
+
+fn video_extension_rank(filename: &str) -> Option<usize> {
+    let ext = std::path::Path::new(filename).extension()?.to_str()?.to_lowercase();
+    VIDEO_EXTENSIONS_BY_PREFERENCE.iter().position(|&e| e == ext)
+}
+
+/// Heurística local, sin red: `resolve_torrent_files` ya da el orden real
+/// de archivos dentro del torrent (índice = `file_idx` real para
+/// `stream_url`/`handle.stream`) — esto elige CUÁL de esos índices es el
+/// video, en vez de asumir `file_idx=0` (bug real reportado en vivo: un
+/// torrent de archive.org trae, además del/los video(s), transcripts
+/// (`.asr.js/.srt/.vtt`), miniaturas (`.jpg/.png/.gif`) y metadata
+/// (`_meta.xml/.sqlite`) como archivos propios del mismo torrent — en
+/// orden alfabético, el índice 0 cayó en un `.asr.js` de 135KB en el caso
+/// reportado, no en el video). Preferencia: nombre (sin extensión) igual
+/// a `identifier` exacto — convención real de archive.org para el
+/// derivado principal —, y si ninguno calza así, la extensión de video de
+/// mejor rango entre los candidatos.
+pub fn resolve_primary_file_idx(files: &[TorrentFileTarget], identifier: &str) -> Option<usize> {
+    let exact_stem = |f: &TorrentFileTarget| {
+        std::path::Path::new(&f.archive_org_filename).file_stem().and_then(|s| s.to_str()) == Some(identifier)
+    };
+    let ranked = |f: &TorrentFileTarget| video_extension_rank(&f.archive_org_filename);
+
+    // Puede haber más de un archivo con nombre exacto (ej. Doctorin1946.avi
+    // Y Doctorin1946.mp4 — caso real) — entre esos, igual gana la extensión
+    // de mejor rango, no el primero que aparece en el torrent.
+    if let Some((i, _)) = files
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| exact_stem(f))
+        .filter_map(|(i, f)| ranked(f).map(|rank| (i, rank)))
+        .min_by_key(|(_, rank)| *rank)
+    {
+        return Some(i);
+    }
+
+    files
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| ranked(f).map(|rank| (i, rank)))
+        .min_by_key(|(_, rank)| *rank)
+        .map(|(i, _)| i)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn target(name: &str) -> TorrentFileTarget {
+        TorrentFileTarget { local_path: name.into(), archive_org_filename: name.to_string() }
+    }
+
+    /// Lista de archivos real, tal cual se vio en disco para el bug
+    /// reportado en vivo (Doctorin1946) — orden alfabético real de
+    /// archive.org, no inventado.
+    fn doctorin1946_real_files() -> Vec<TorrentFileTarget> {
+        [
+            "Doctorin1946.asr.js",
+            "Doctorin1946.asr.srt",
+            "Doctorin1946.asr.vtt",
+            "Doctorin1946.avi",
+            "Doctorin1946.gif",
+            "Doctorin1946.mp3",
+            "Doctorin1946.mp4",
+            "Doctorin1946.mpeg",
+            "Doctorin1946.ogv",
+            "Doctorin1946.png",
+            "Doctorin1946_256kb.rm",
+            "Doctorin1946_512kb.mp4",
+            "Doctorin1946_64kb.rm",
+            "Doctorin1946_edit.mp4",
+            "Doctorin1946_meta.xml",
+            "__ia_thumb.jpg",
+        ]
+        .iter()
+        .map(|n| target(n))
+        .collect()
+    }
+
+    #[test]
+    fn resolve_primary_file_idx_picks_the_file_matching_identifier_exactly_over_other_video_candidates() {
+        let files = doctorin1946_real_files();
+        let idx = resolve_primary_file_idx(&files, "Doctorin1946").unwrap();
+        assert_eq!(
+            files[idx].archive_org_filename, "Doctorin1946.mp4",
+            "hay 3 candidatos .mp4 (plano, _512kb, _edit) — debe elegir el que coincide exacto con el identifier, \
+             no el primero en orden alfabético/de torrent"
+        );
+    }
+
+    #[test]
+    fn resolve_primary_file_idx_never_picks_the_asr_transcript_at_index_zero() {
+        let files = doctorin1946_real_files();
+        let idx = resolve_primary_file_idx(&files, "Doctorin1946").unwrap();
+        assert_ne!(idx, 0, "el índice 0 real es Doctorin1946.asr.js (transcript, 135KB) — bug real reportado en vivo");
+    }
+
+    #[test]
+    fn resolve_primary_file_idx_falls_back_to_best_ranked_extension_without_an_exact_name_match() {
+        let files = vec![target("item.mp3"), target("item_derivative.ogv"), target("item_derivative.avi")];
+        let idx = resolve_primary_file_idx(&files, "item").unwrap();
+        assert_eq!(files[idx].archive_org_filename, "item_derivative.avi", "sin match exacto, gana la extensión mejor rankeada (avi > ogv)");
+    }
+
+    #[test]
+    fn resolve_primary_file_idx_returns_none_without_any_video_extension() {
+        let files = vec![target("item.txt"), target("item.jpg")];
+        assert!(resolve_primary_file_idx(&files, "item").is_none());
+    }
 
     #[test]
     fn deserializes_item_with_plain_string_title() {
@@ -386,6 +532,22 @@ mod tests {
                 .await
                 .unwrap_or_else(|e| panic!("{} ya no resuelve un archivo reproducible: {e}", item.identifier));
         }
+    }
+
+    /// Red real, deshabilitado por defecto. Reproduce el bug real
+    /// encontrado en vivo por el usuario: `FinalFantasy2_356` solo tiene
+    /// archivos con format "512Kb MPEG4" (sin "h.264") — `PLAYABLE_FORMATS`
+    /// traía "512kb mp4" (typo, nunca matcheaba "512kb mpeg4") y
+    /// `primary_video_file` fallaba, sin fallback HTTP registrado, cayendo
+    /// en silencio a P2P puro contra un origen sin peers reales.
+    #[tokio::test]
+    #[ignore]
+    async fn primary_video_file_resolves_512kb_mpeg4_only_items() {
+        let client = reqwest::Client::new();
+        let url = primary_video_file(&client, "FinalFantasy2_356")
+            .await
+            .expect("debe resolver un archivo reproducible pese a no tener format 'h.264'");
+        assert!(url.contains("512kb.mp4"), "esperaba resolver uno de los archivos _512kb.mp4: {url}");
     }
 
     /// Red real, deshabilitado por defecto. Confirma que `sort[]` es

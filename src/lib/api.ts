@@ -11,10 +11,16 @@ import type {
   MediaItem,
   OnlineItem,
   RecordingInfo,
+  OpenSubtitlesResult,
+  ScoredCandidate,
   SourceSettings,
   SpeedLimits,
+  Subtitle,
   TorrentEngineConfig,
+  TorrentHealth,
   TorrentInfo,
+  YoutubeSource,
+  YoutubeVideo,
 } from "../types";
 
 // Envoltorios finos y tipados sobre invoke() — un lugar único por comando,
@@ -106,6 +112,35 @@ export const api = {
 
   deleteRecording: (id: string) => invoke<void>("delete_recording", { id }),
 
+  listYoutubeSources: () => invoke<YoutubeSource[]>("list_youtube_sources"),
+
+  addYoutubeSource: (name: string, channelUrl: string, category: string) =>
+    invoke<YoutubeSource>("add_youtube_source", { name, channelUrl, category }),
+
+  removeYoutubeSource: (id: string) => invoke<void>("remove_youtube_source", { id }),
+
+  toggleYoutubeSource: (id: string, enabled: boolean) =>
+    invoke<void>("toggle_youtube_source", { id, enabled }),
+
+  listYoutubeVideos: () => invoke<YoutubeVideo[]>("list_youtube_videos"),
+
+  // Mismo criterio que curateChannels: se llama después del render rápido
+  // sin curar, nunca antes.
+  curateYoutubeVideos: (videos: YoutubeVideo[]) =>
+    invoke<YoutubeVideo[]>("curate_youtube_videos", { videos }),
+
+  setYoutubeApiKey: (key: string) => invoke<void>("set_youtube_api_key", { key }),
+
+  getYoutubeApiKeyStatus: () => invoke<boolean>("get_youtube_api_key_status"),
+
+  removeYoutubeApiKey: () => invoke<void>("remove_youtube_api_key"),
+
+  // Búsqueda global (lupa): más allá del tope MAX_VIDEOS_PER_SOURCE por
+  // canal ya agregado, nunca contra canales nuevos (ver
+  // Planes_mejora_popcorn/busqueda_global.txt).
+  searchYoutubeVideosInAddedChannels: (query: string) =>
+    invoke<YoutubeVideo[]>("search_youtube_videos_in_added_channels", { query }),
+
   // Rápida (archive.org + Blender Foundation, ~1.5s medido en vivo) —
   // separada de browsePublicDomainTorrents (ese sitio de terceros tarda
   // ~8s) para que el frontend pueda renderizar cada grupo apenas responde
@@ -183,6 +218,45 @@ export const api = {
   // curados (curation_enabled por indexer, ver source_settings) — a
   // diferencia de testIndexer, que valida uno solo al configurarlo.
   searchIndexers: (query: string) => invoke<IndexerResult[]>("search_indexers", { query }),
+  searchIndexersWithAi: (query: string) => invoke<IndexerResult[]>("search_indexers_with_ai", { query }),
+
+  // Opt-in, nunca automático (a diferencia de la curación IA) — consulta
+  // tracker UDP + DHT reales, más lento que el `seeders` que ya trae el
+  // indexer. Preserva el orden de `magnets` para mergear por índice.
+  checkTorrentHealthBatch: (magnets: string[]) =>
+    invoke<TorrentHealth[]>("check_torrent_health_batch", { magnets }),
+
+  // Búsqueda global (lupa): rankea `candidates` (títulos de lo ya
+  // agregado) contra `query` vía curate_by_hint del proveedor de IA
+  // activo — sin caché, la lista cambia todo el tiempo. Falla explícito
+  // sin proveedor activo.
+  searchAddedContentWithAi: (query: string, candidates: string[]) =>
+    invoke<ScoredCandidate[]>("search_added_content_with_ai", { query, candidates }),
+
+  listSubtitles: (mediaItemId: string) => invoke<Subtitle[]>("list_subtitles", { mediaItemId }),
+
+  addSubtitleText: (mediaItemId: string, language: string, origin: string, content: string) =>
+    invoke<Subtitle>("add_subtitle_text", { mediaItemId, language, origin, content }),
+
+  removeSubtitle: (id: string) => invoke<void>("remove_subtitle", { id }),
+
+  // Falla explícito sin proveedor de IA activo — nunca degrada en silencio
+  // a "sin traducción".
+  translateSubtitleTexts: (texts: string[], targetLang: string) =>
+    invoke<string[]>("translate_subtitle_texts", { texts, targetLang }),
+
+  searchOpensubtitles: (query: string, language: string) =>
+    invoke<OpenSubtitlesResult[]>("search_opensubtitles", { query, language }),
+
+  downloadOpensubtitlesSubtitle: (fileId: number) =>
+    invoke<string>("download_opensubtitles_subtitle", { fileId }),
+
+  setOpensubtitlesCredentials: (username: string, password: string) =>
+    invoke<void>("set_opensubtitles_credentials", { username, password }),
+
+  getOpensubtitlesCredentialsStatus: () => invoke<boolean>("get_opensubtitles_credentials_status"),
+
+  removeOpensubtitlesCredentials: () => invoke<void>("remove_opensubtitles_credentials"),
 
   listSourceSettings: () => invoke<SourceSettings[]>("list_source_settings"),
 
@@ -218,4 +292,16 @@ export const api = {
   // Web API, para probar antes de guardar.
   testTorrentEngine: (baseUrl: string, username: string, password: string) =>
     invoke<void>("test_torrent_engine", { baseUrl, username, password }),
+
+  setTorrentProxyUrl: (url: string) => invoke<void>("set_torrent_proxy_url", { url }),
+
+  getTorrentProxyStatus: () => invoke<boolean>("get_torrent_proxy_status"),
+
+  removeTorrentProxyUrl: () => invoke<void>("remove_torrent_proxy_url"),
+
+  setCatalogProxyUrl: (url: string) => invoke<void>("set_catalog_proxy_url", { url }),
+
+  getCatalogProxyStatus: () => invoke<boolean>("get_catalog_proxy_status"),
+
+  removeCatalogProxyUrl: () => invoke<void>("remove_catalog_proxy_url"),
 };

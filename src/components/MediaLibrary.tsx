@@ -26,7 +26,7 @@ export function MediaLibrary({ items, onPlay, onRemoved }: MediaLibraryProps) {
   if (items.length === 0) {
     return (
       <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
-        Tu biblioteca está vacía — usá "Agregar Torrent" para sumar algo del catálogo legal.
+        Tu biblioteca está vacía — usa "Agregar Torrent" para sumar algo del catálogo legal.
       </p>
     );
   }

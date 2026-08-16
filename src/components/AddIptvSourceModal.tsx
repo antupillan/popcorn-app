@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ChangeEvent } from "react";
 import { api } from "../lib/api";
 
-interface AddIptvSourceModalProps {
+interface AddIptvSourceModalBodyProps {
   onClose: () => void;
   onAdded: () => void;
 }
@@ -17,47 +17,35 @@ const TABS: { id: Tab; label: string }[] = [
 // Sin tab de "búsqueda" a propósito — sin catálogo propio de listas IPTV,
 // mismo blindaje legal que los indexers BYO: el usuario trae sus propias
 // fuentes, la app no recomienda ninguna más allá de la semilla pública ya
-// sembrada (ver migración iptv_sources).
-export function AddIptvSourceModal({ onClose, onAdded }: AddIptvSourceModalProps) {
+// sembrada (ver migración iptv_sources). Sin backdrop/header propio: el
+// chrome vive en AddSourceModal, que monta este cuerpo como uno de sus
+// tres grupos.
+export function AddIptvSourceModalBody({ onClose, onAdded }: AddIptvSourceModalBodyProps) {
   const [tab, setTab] = useState<Tab>("url");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex max-h-[80vh] w-full max-w-lg flex-col rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-white">Agregar fuente IPTV</h2>
+    <>
+      <div className="flex gap-1 border-b border-zinc-200 px-3 pt-2 dark:border-zinc-800">
+        {TABS.map((t) => (
           <button
-            onClick={onClose}
-            className="rounded-md p-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`rounded-t-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              tab === t.id
+                ? "border-b-2 border-[var(--accent)] text-[var(--accent)] dark:text-[var(--accent-fg)]"
+                : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+            }`}
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
+            {t.label}
           </button>
-        </div>
-
-        <div className="flex gap-1 border-b border-zinc-200 px-3 pt-2 dark:border-zinc-800">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`rounded-t-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                tab === t.id
-                  ? "border-b-2 border-[var(--accent)] text-[var(--accent)] dark:text-[var(--accent-fg)]"
-                  : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4">
-          {tab === "url" && <UrlTab onAdded={onAdded} onClose={onClose} />}
-          {tab === "file" && <FileTab onAdded={onAdded} onClose={onClose} />}
-        </div>
+        ))}
       </div>
-    </div>
+
+      <div className="flex-1 overflow-y-auto p-4">
+        {tab === "url" && <UrlTab onAdded={onAdded} onClose={onClose} />}
+        {tab === "file" && <FileTab onAdded={onAdded} onClose={onClose} />}
+      </div>
+    </>
   );
 }
 

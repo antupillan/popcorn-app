@@ -2,18 +2,22 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../lib/api";
-import type { AiProviderConfig, Indexer, IndexerResult, SourceSettings, TorrentEngineConfig } from "../types";
+import type { AiProviderConfig, Indexer, IndexerResult, TorrentEngineConfig } from "../types";
 import type { TitleBarOrder, TitleBarSide } from "../App";
 import { AddAiProviderModal } from "./AddAiProviderModal";
 import { AddIndexerModal } from "./AddIndexerModal";
 import { BITTORRENT_SHARING_NOTICE } from "../lib/legalText";
 
 type SectionId =
+  | "ayuda"
   | "ia"
   | "indexers"
   | "almacenamiento"
   | "ventana"
   | "motor"
+  | "proxy"
+  | "youtube"
+  | "opensubtitles"
   | "comunidades"
   | "avanzado"
   | "legal";
@@ -26,11 +30,15 @@ interface Section {
 }
 
 const SECTIONS: Section[] = [
+  { id: "ayuda", label: "Ayuda", status: "ready" },
   { id: "ia", label: "IA", status: "ready" },
   { id: "indexers", label: "Indexers", status: "ready" },
   { id: "almacenamiento", label: "Almacenamiento", status: "ready" },
   { id: "ventana", label: "Ventana", status: "ready" },
   { id: "motor", label: "Motor de torrents", status: "ready" },
+  { id: "proxy", label: "Proxy / VPN", status: "ready" },
+  { id: "youtube", label: "YouTube", status: "ready" },
+  { id: "opensubtitles", label: "OpenSubtitles", status: "ready" },
   {
     id: "comunidades",
     label: "Comunidades",
@@ -93,6 +101,8 @@ export function Ajustes({
             >
               {s.status === "soon" ? (
                 <p className="p-4 text-xs text-zinc-500 dark:text-zinc-400">{s.note}</p>
+              ) : s.id === "ayuda" ? (
+                <AyudaTab />
               ) : s.id === "ia" ? (
                 <IaTab />
               ) : s.id === "indexers" ? (
@@ -101,6 +111,12 @@ export function Ajustes({
                 <AlmacenamientoTab />
               ) : s.id === "motor" ? (
                 <MotorTab />
+              ) : s.id === "proxy" ? (
+                <ProxyTab />
+              ) : s.id === "youtube" ? (
+                <YoutubeTab />
+              ) : s.id === "opensubtitles" ? (
+                <OpenSubtitlesTab />
               ) : s.id === "legal" ? (
                 <AvisoLegalTab />
               ) : (
@@ -284,7 +300,6 @@ function IaTab() {
 
 function IndexersTab() {
   const [indexers, setIndexers] = useState<Indexer[]>([]);
-  const [sourceSettings, setSourceSettings] = useState<SourceSettings[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -295,11 +310,9 @@ function IndexersTab() {
 
   function refresh() {
     setLoading(true);
-    Promise.all([api.listIndexers(), api.listSourceSettings()])
-      .then(([i, s]) => {
-        setIndexers(i);
-        setSourceSettings(s);
-      })
+    api
+      .listIndexers()
+      .then(setIndexers)
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }
@@ -313,18 +326,6 @@ function IndexersTab() {
       refresh();
     } catch (e) {
       console.error(`[popcorn] no se pudo togglear el indexer ${id}: ${e}`);
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  async function toggleCuration(id: string, enabled: boolean) {
-    setBusyId(id);
-    try {
-      await api.setSourceCurationEnabled(id, enabled);
-      refresh();
-    } catch (e) {
-      console.error(`[popcorn] no se pudo togglear curación de ${id}: ${e}`);
     } finally {
       setBusyId(null);
     }
@@ -377,7 +378,6 @@ function IndexersTab() {
 
       <ul className="flex flex-col gap-2">
         {indexers.map((idx) => {
-          const settings = sourceSettings.find((s) => s.id === idx.id);
           const result = testResults[idx.id];
           return (
             <li
@@ -406,18 +406,6 @@ function IndexersTab() {
                   </button>
                 </div>
               </div>
-
-              {settings && (
-                <label className="flex items-center gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-300">
-                  <input
-                    type="checkbox"
-                    checked={settings.curation_enabled}
-                    onChange={(e) => toggleCuration(idx.id, e.target.checked)}
-                    disabled={busyId === idx.id}
-                  />
-                  Curación por IA
-                </label>
-              )}
 
               <div className="flex items-center gap-1.5">
                 <input
@@ -624,7 +612,7 @@ function MotorTab() {
     <div className="flex flex-col gap-3 p-4 pt-0">
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
         Por defecto Popcorn descarga con su motor embebido (librqbit), sin nada más que instalar.
-        También podés orquestar un qBittorrent que ya tengas corriendo — en ese caso Popcorn nunca
+        También puedes orquestar un qBittorrent que ya tengas corriendo — en ese caso Popcorn nunca
         toca bytes de la red, solo le pide a qBittorrent que agregue/liste/pause/quite torrents vía
         su Web API.
       </p>
@@ -655,7 +643,7 @@ function MotorTab() {
       {kind === "qbittorrent" && (
         <div className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <div className="rounded-lg border border-zinc-200 p-2.5 text-[11px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-            Popcorn no instala qBittorrent — necesitás tenerlo instalado por tu cuenta con la WebUI
+            Popcorn no instala qBittorrent — necesitas tenerlo instalado por tu cuenta con la WebUI
             habilitada (Herramientas → Opciones → Web UI, puerto por defecto 8080).{" "}
             <a
               href="https://www.qbittorrent.org/download"
@@ -723,13 +711,228 @@ function MotorTab() {
         {saving ? "Guardando…" : saved ? "Guardado" : "Guardar"}
       </button>
       {!canSave && (
-        <p className="text-[10px] text-red-500">Completá la URL de la WebUI antes de guardar.</p>
+        <p className="text-[10px] text-red-500">Completa la URL de la WebUI antes de guardar.</p>
       )}
 
       <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
         Si qBittorrent queda configurado pero no se puede conectar al arrancar Popcorn, la app
         igual abre usando el motor embebido y te avisa que no pudo conectar.
       </p>
+    </div>
+  );
+}
+
+interface ProxyFieldProps {
+  title: string;
+  description: string;
+  urlHint: string;
+  getStatus: () => Promise<boolean>;
+  setUrl: (url: string) => Promise<void>;
+  removeUrl: () => Promise<void>;
+}
+
+function ProxyField({ title, description, urlHint, getStatus, setUrl, removeUrl }: ProxyFieldProps) {
+  const [configured, setConfigured] = useState(false);
+  const [value, setValue] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  function refresh() {
+    setLoading(true);
+    getStatus()
+      .then(setConfigured)
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(refresh, []);
+
+  async function save() {
+    if (!value.trim()) return;
+    setSaving(true);
+    setSaved(false);
+    try {
+      await setUrl(value.trim());
+      setValue("");
+      setSaved(true);
+      refresh();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    setSaving(true);
+    try {
+      await removeUrl();
+      setValue("");
+      refresh();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+      <p className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">{title}</p>
+      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{description}</p>
+      <label className="flex flex-col gap-1 text-[11px] text-zinc-600 dark:text-zinc-300">
+        {urlHint}
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={loading ? "Cargando…" : configured ? "•••••••• (ya guardado)" : "Sin configurar"}
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] outline-none focus:border-[var(--accent-hover)] dark:border-zinc-700 dark:bg-zinc-950"
+        />
+      </label>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={save}
+          disabled={saving || !value.trim()}
+          className="rounded-md border border-[var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white disabled:opacity-50 dark:text-[var(--accent-fg)]"
+        >
+          {saving ? "Guardando…" : saved ? "Guardado" : "Guardar"}
+        </button>
+        {configured && (
+          <button
+            onClick={remove}
+            disabled={saving}
+            className="rounded-md border border-red-300 px-2.5 py-1.5 text-[11px] font-semibold text-red-500 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:hover:bg-red-950"
+          >
+            Quitar
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProxyTab() {
+  return (
+    <div className="flex flex-col gap-3 p-4 pt-0">
+      <ProxyField
+        title="Motor de torrents"
+        description="Protege tu IP frente a otros peers del swarm P2P mientras descargas por torrent. Solo aplica al motor embebido (librqbit) — si usas qBittorrent externo, configura el proxy ahí directamente."
+        urlHint="socks5://[usuario:password@]host:puerto"
+        getStatus={api.getTorrentProxyStatus}
+        setUrl={api.setTorrentProxyUrl}
+        removeUrl={api.removeTorrentProxyUrl}
+      />
+      <ProxyField
+        title="Catálogo y búsqueda"
+        description="Para alcanzar catálogos/APIs bloqueados por censura estatal (búsqueda, indexers, Data API de YouTube, proveedores de IA — Ollama local queda siempre excluido). No reproduce video de IPTV ni YouTube: eso lo carga el WebView directo, fuera de este proxy — para eso hace falta una VPN de sistema operativo."
+        urlHint="http://[usuario:password@]host:puerto (también acepta socks5://)"
+        getStatus={api.getCatalogProxyStatus}
+        setUrl={api.setCatalogProxyUrl}
+        removeUrl={api.removeCatalogProxyUrl}
+      />
+    </div>
+  );
+}
+
+function YoutubeTab() {
+  return (
+    <div className="flex flex-col gap-3 p-4 pt-0">
+      <ProxyField
+        title="YouTube Data API key"
+        description="Necesaria para resolver canales y listar videos (channels.list/playlistItems.list, 1 unidad de cuota por página). Se obtiene gratis en Google Cloud Console habilitando 'YouTube Data API v3'. Los canales y su reproducción (agregados en la pestaña YouTube de Biblioteca) no funcionan sin esto."
+        urlHint="clave de la Data API v3"
+        getStatus={api.getYoutubeApiKeyStatus}
+        setUrl={api.setYoutubeApiKey}
+        removeUrl={api.removeYoutubeApiKey}
+      />
+    </div>
+  );
+}
+
+function OpenSubtitlesTab() {
+  const [configured, setConfigured] = useState(false);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  function refresh() {
+    setLoading(true);
+    api
+      .getOpensubtitlesCredentialsStatus()
+      .then(setConfigured)
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(refresh, []);
+
+  async function save() {
+    if (!username.trim() || !password.trim()) return;
+    setSaving(true);
+    setSaved(false);
+    try {
+      await api.setOpensubtitlesCredentials(username.trim(), password);
+      setPassword("");
+      setSaved(true);
+      refresh();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    setSaving(true);
+    try {
+      await api.removeOpensubtitlesCredentials();
+      setUsername("");
+      setPassword("");
+      refresh();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 p-4 pt-0">
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+        Usadas para buscar y descargar subtítulos desde el botón CC del reproductor (sección Subtítulos del menú
+        lateral). Sin cuenta: 5 descargas/día. Con cuenta gratis en opensubtitles.com: 20/día. La contraseña va
+        directo al keychain del sistema, nunca a la base de datos ni de vuelta al frontend.
+      </p>
+      <label className="flex flex-col gap-1 text-[11px] text-zinc-600 dark:text-zinc-300">
+        Usuario de opensubtitles.com
+        <input
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder={loading ? "Cargando…" : configured ? "ya configurado" : "sin configurar"}
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] outline-none focus:border-[var(--accent-hover)] dark:border-zinc-700 dark:bg-zinc-950"
+        />
+      </label>
+      <label className="flex flex-col gap-1 text-[11px] text-zinc-600 dark:text-zinc-300">
+        Contraseña
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder={configured ? "•••••••• (ya guardada)" : "sin guardar"}
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] outline-none focus:border-[var(--accent-hover)] dark:border-zinc-700 dark:bg-zinc-950"
+        />
+      </label>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={save}
+          disabled={saving || !username.trim() || !password.trim()}
+          className="rounded-md border border-[var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white disabled:opacity-50 dark:text-[var(--accent-fg)]"
+        >
+          {saving ? "Guardando…" : saved ? "Guardado" : "Guardar"}
+        </button>
+        {configured && (
+          <button
+            onClick={remove}
+            disabled={saving}
+            className="rounded-md border border-red-300 px-2.5 py-1.5 text-[11px] font-semibold text-red-500 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:hover:bg-red-950"
+          >
+            Quitar
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -808,17 +1011,17 @@ function PrivacidadContent() {
       </LegalSection>
 
       <LegalSection title="Qué sale de tu máquina">
-        <p>Solo lo que vos mismo configurás o usás activamente:</p>
+        <p>Solo lo que tú mismo configuras o usas activamente:</p>
         <ul className="mt-1 list-inside list-disc space-y-0.5">
           <li>archive.org y Public Domain Torrents (catálogo legal por defecto).</li>
           <li>El proveedor de IA que elijas, con tu propia key (o un Ollama local, sin red).</li>
           <li>Los indexers y fuentes IPTV que agregues por tu cuenta.</li>
-          <li>Un qBittorrent externo, si lo configurás en Ajustes → Motor de torrents.</li>
+          <li>Un qBittorrent externo, si lo configuras en Ajustes → Motor de torrents.</li>
         </ul>
         <p className="mt-1">
           Al descargar por BitTorrent, tu IP es visible para peers/trackers/DHT — es una propiedad
           del protocolo BitTorrent en sí, no algo que Popcorn agregue ni pueda ocultar. No llevamos
-          ningún registro de qué archivos transferís: no hay servidor nuestro que pudiera guardarlo,
+          ningún registro de qué archivos transfieres: no hay servidor nuestro que pudiera guardarlo,
           y tu propia biblioteca vive solo en tu base de datos local.
         </p>
       </LegalSection>
@@ -839,13 +1042,13 @@ function TerminosDeUsoContent() {
       <LegalSection title="Software provisto tal cual">
         <p>
           Sin garantías de ningún tipo sobre disponibilidad, precisión de metadata o funcionamiento
-          ininterrumpido — es software que corrés vos, en tu equipo, bajo tu control.
+          ininterrumpido — es software que ejecutas en tu equipo, bajo tu control.
         </p>
       </LegalSection>
 
       <LegalSection title="Responsabilidad del contenido">
         <p>
-          Sos responsable de lo que agregás, descargás y compartís, y de las fuentes/indexers que
+          Eres responsable de lo que agregas, descargas y compartes, y de las fuentes/indexers que
           decidas sumar por tu cuenta. Popcorn no cura ni recomienda ningún indexer de contenido con
           copyright.
         </p>
@@ -858,36 +1061,36 @@ function TerminosDeUsoContent() {
         </ul>
       </LegalSection>
 
-      <LegalSection title="Riesgo de lo que descargás">
+      <LegalSection title="Riesgo de lo que descargas">
         <p>
-          Popcorn no escanea ni analiza el contenido de los archivos que bajás — los archivos que
-          obtengas por torrent o por un indexer que agregaste pueden contener malware. Sos vos quien
-          decide qué fuentes agregar y qué descargar; usá tu propio antivirus si te preocupa.
+          Popcorn no escanea ni analiza el contenido de los archivos que descargas — los archivos que
+          obtengas por torrent o por un indexer que agregaste pueden contener malware. Eres tú quien
+          decide qué fuentes agregar y qué descargar; usa tu propio antivirus si te preocupa.
         </p>
       </LegalSection>
 
       <LegalSection title="Derechos de autor">
         <p>
-          Popcorn no aloja contenido — es un cliente que se conecta a fuentes que vos elegís. Si
-          creés que algo accedido a través de un indexer o fuente IPTV que agregaste infringe tus
+          Popcorn no aloja contenido — es un cliente que se conecta a fuentes que tú eliges. Si
+          crees que algo accedido a través de un indexer o fuente IPTV que agregaste infringe tus
           derechos, el reclamo corresponde a quien opera esa fuente, no a nosotros. Para contenido
-          del catálogo por defecto (archive.org), contactá directamente a archive.org.
+          del catálogo por defecto (archive.org), contacta directamente a archive.org.
         </p>
       </LegalSection>
 
       <LegalSection title="Sin afiliación">
         <p>
           Popcorn no está afiliado a archive.org, qBittorrent, Transmission, ningún proveedor de IA,
-          ni a ningún indexer o fuente IPTV que agregues por tu cuenta. Si usás un motor externo o
-          traés tu propia API key, también quedás sujeto a los términos de ese tercero.
+          ni a ningún indexer o fuente IPTV que agregues por tu cuenta. Si usas un motor externo o
+          traes tu propia API key, también quedas sujeto a los términos de ese tercero.
         </p>
       </LegalSection>
 
       <LegalSection title="Red social (Nostr) — diseño, todavía no implementada">
         <p>
           Esto describe una decisión de diseño ya cerrada para una fase futura, no un comportamiento
-          actual de la app. Cuando exista: Popcorn no opera ningún relé Nostr — te conectás a relés
-          de terceros o a uno propio, cada uno con sus propias reglas, igual que elegís un indexer.
+          actual de la app. Cuando exista: Popcorn no opera ningún relé Nostr — te conectas a relés
+          de terceros o a uno propio, cada uno con sus propias reglas, igual que eliges un indexer.
           Las comunidades (NIP-72) son moderadas públicamente por quien las crea; toda acción de
           moderación queda firmada y auditable, nunca oculta. Sin mensajes privados (DMs) en la
           primera versión.
@@ -944,7 +1147,7 @@ function VentanaTab({ titleBarSide, onSetTitleBarSide, titleBarOrder, onSetTitle
       <div className="flex items-center justify-between gap-2 rounded-lg border border-zinc-200 px-3 py-2.5 dark:border-zinc-800">
         <div>
           <p className="text-xs font-medium text-zinc-900 dark:text-zinc-100">Orden de los botones</p>
-          <p className="text-[10px] text-zinc-500 dark:text-zinc-400">Independiente del lado — ajustalo igual.</p>
+          <p className="text-[10px] text-zinc-500 dark:text-zinc-400">Independiente del lado — ajústalo igual.</p>
         </div>
         <div className="flex shrink-0 gap-1">
           <button
@@ -969,6 +1172,172 @@ function VentanaTab({ titleBarSide, onSetTitleBarSide, titleBarOrder, onSetTitle
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+interface HelpTopicCardProps {
+  title: string;
+  children: ReactNode;
+}
+
+// Tarjeta liviana, colapsada por defecto — mismo criterio visual que el
+// acordeón externo (AccordionSection) pero un nivel más chico, para no
+// competir visualmente con las secciones de Ajustes.
+function HelpTopicCard({ title, children }: HelpTopicCardProps) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="rounded-lg border border-zinc-200 dark:border-zinc-800">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-semibold text-zinc-900 dark:text-zinc-100"
+      >
+        {title}
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+        >
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-1.5 border-t border-zinc-200 px-3 py-2.5 text-[11px] leading-relaxed text-zinc-600 dark:border-zinc-800 dark:text-zinc-300">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HelpLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="font-medium text-[var(--accent)] underline dark:text-[var(--accent-fg)]"
+    >
+      {children}
+    </a>
+  );
+}
+
+// Manual de uso — el único lugar de la app con pasos para configurar
+// servicios externos (conseguir una API key, instalar algo, habilitar una
+// opción en otro programa). Los temas de indexers/IPTV explican el
+// mecanismo genérico, nunca nombran ni linkean una fuente concreta
+// (Mandato 5, CLAUDE.md — mismo blindaje legal que ya rige el resto de
+// la app para esos dos casos).
+function AyudaTab() {
+  return (
+    <div className="flex flex-col gap-2 p-4 pt-0">
+      <HelpTopicCard title="Conseguir una YouTube Data API key">
+        <p>Necesaria para agregar y listar canales de YouTube. Se obtiene gratis:</p>
+        <ol className="list-decimal space-y-1 pl-4">
+          <li>
+            Entra a <HelpLink href="https://console.cloud.google.com">console.cloud.google.com</HelpLink> (cuenta
+            Google, sin tarjeta).
+          </li>
+          <li>Crea un proyecto nuevo (o usa uno existente).</li>
+          <li>
+            Busca <strong>"YouTube Data API v3"</strong> y presiona <strong>Habilitar</strong>.
+          </li>
+          <li>
+            Menú lateral → <strong>Credenciales</strong> → <strong>Crear credenciales</strong> →{" "}
+            <strong>Clave de API</strong>.
+          </li>
+          <li>Opcional: restríngela a solo esa API, para que no sirva para otras si se filtra.</li>
+        </ol>
+        <p>
+          Cuota gratis de 10.000 unidades/día — agregar un canal gasta 1 unidad. Pégala en{" "}
+          <strong>Ajustes → YouTube</strong>.
+        </p>
+      </HelpTopicCard>
+
+      <HelpTopicCard title="Conseguir una API key de Gemini">
+        <p>
+          Entra a <HelpLink href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</HelpLink>,{" "}
+          <strong>Crear clave de API</strong>. Pégala al agregar un proveedor IA tipo "Gemini" en{" "}
+          <strong>Ajustes → IA</strong>.
+        </p>
+      </HelpTopicCard>
+
+      <HelpTopicCard title="Proveedores OpenAI-compatible (OpenAI, DeepSeek, Mistral)">
+        <p>Cada uno tiene su propia consola de API keys — la Base URL ya viene precargada al elegirlos:</p>
+        <ul className="list-disc space-y-1 pl-4">
+          <li>
+            OpenAI: <HelpLink href="https://platform.openai.com/api-keys">platform.openai.com/api-keys</HelpLink>
+          </li>
+          <li>
+            DeepSeek: <HelpLink href="https://platform.deepseek.com">platform.deepseek.com</HelpLink>
+          </li>
+          <li>
+            Mistral: <HelpLink href="https://console.mistral.ai">console.mistral.ai</HelpLink>
+          </li>
+        </ul>
+      </HelpTopicCard>
+
+      <HelpTopicCard title="Ollama local (sin API key)">
+        <p>
+          Instálalo desde <HelpLink href="https://ollama.com">ollama.com</HelpLink>, después en una terminal:{" "}
+          <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono dark:bg-zinc-800">ollama pull &lt;modelo&gt;</code>.
+          Sin key — elige el preset "Ollama local" al agregar el proveedor, la Base URL ya viene precargada.
+        </p>
+      </HelpTopicCard>
+
+      <HelpTopicCard title="Conectar un qBittorrent externo">
+        <ol className="list-decimal space-y-1 pl-4">
+          <li>
+            Instálalo si no lo tienes: <HelpLink href="https://www.qbittorrent.org/download">qbittorrent.org/download</HelpLink>.
+          </li>
+          <li>
+            Ábrelo → <strong>Herramientas → Opciones → Web UI</strong>.
+          </li>
+          <li>Activa la Web UI, anota el puerto (8080 por defecto) y activa autenticación con usuario/contraseña.</li>
+          <li>
+            Carga esos datos en <strong>Ajustes → Motor de torrents</strong>.
+          </li>
+        </ol>
+      </HelpTopicCard>
+
+      <HelpTopicCard title="Proxy / VPN">
+        <p>
+          Popcorn no incluye ni recomienda ningún proxy o VPN — usas el servicio que ya tienes (propio, pago o
+          gratuito). El campo de motor de torrents espera un SOCKS5:{" "}
+          <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono dark:bg-zinc-800">
+            socks5://usuario:password@host:puerto
+          </code>{" "}
+          (usuario/password opcionales). El de catálogo acepta HTTP o SOCKS5 con el mismo formato, cambiando el
+          esquema.
+        </p>
+      </HelpTopicCard>
+
+      <HelpTopicCard title="Indexers y fuentes IPTV (trae las tuyas)">
+        <p>
+          Un <strong>indexer</strong> es un servicio que expone una lista o API buscable de magnets de torrents —
+          Popcorn no trae ninguno precargado ni recomienda uno en particular, la fuente es tuya. Al agregarlo,
+          eliges el formato que ya devuelve (lista de magnets, RSS o JSON).
+        </p>
+        <p>
+          Una <strong>lista IPTV</strong> es un archivo M3U/M3U8 con URLs de streams en vivo — también la traes
+          tú (por URL o subiendo el archivo). Popcorn ya incluye por defecto una única fuente pública verificada
+          en vivo (radiodifusores oficiales); cualquier otra es responsabilidad de quien la agrega.
+        </p>
+      </HelpTopicCard>
+
+      <HelpTopicCard title="Buscar/descargar subtítulos desde OpenSubtitles">
+        <p>
+          Desde el botón <strong>CC</strong> del reproductor (o la sección Subtítulos del menú lateral) se puede
+          buscar y descargar subtítulos reales de OpenSubtitles. Hace falta una cuenta gratis en{" "}
+          <HelpLink href="https://www.opensubtitles.com">opensubtitles.com</HelpLink> — regístrate ahí, después
+          carga tu usuario y contraseña en <strong>Ajustes → OpenSubtitles</strong>. Sin cuenta el límite es de 5
+          descargas por día; con cuenta gratis sube a 20 por día. La búsqueda en sí no tiene límite.
+        </p>
+      </HelpTopicCard>
     </div>
   );
 }

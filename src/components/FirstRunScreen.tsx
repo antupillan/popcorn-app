@@ -10,7 +10,7 @@ export function FirstRunScreen({ onAccept }: FirstRunScreenProps) {
       <div className="my-8 w-full max-w-2xl rounded-xl border border-zinc-800 bg-zinc-900 p-6">
         <h1 className="text-lg font-bold text-white">Bienvenido a Popcorn</h1>
         <p className="mt-1 text-xs text-zinc-400">
-          Antes de empezar, esto es lo que necesitás saber sobre cómo funciona esta app.
+          Antes de empezar, esto es lo que necesitas saber sobre cómo funciona esta app.
         </p>
 
         <section className="mt-5 space-y-2">
@@ -18,7 +18,7 @@ export function FirstRunScreen({ onAccept }: FirstRunScreenProps) {
             Qué es y qué no es
           </h2>
           <p className="text-xs leading-relaxed text-zinc-300">
-            Popcorn es software que corrés en tu propia máquina. No hay un servidor central que
+            Popcorn es software que ejecutas en tu propia máquina. No hay un servidor central que
             operemos nosotros: tu biblioteca, tus torrents y tu configuración viven en tu equipo.
             No estamos afiliados a archive.org, a ningún operador de relés, ni a qBittorrent,
             Transmission o cualquier indexer que decidas agregar por tu cuenta — cada uno de esos
@@ -37,7 +37,7 @@ export function FirstRunScreen({ onAccept }: FirstRunScreenProps) {
             </li>
             <li>Prohibido usar el software para distribuir malware.</li>
             <li>
-              Sos responsable de lo que descargás y de las fuentes/indexers que decidas agregar —
+              Eres responsable de lo que descargas y de las fuentes/indexers que decidas agregar —
               el software no cura ni recomienda ningún indexer de contenido con copyright.
             </li>
           </ul>
@@ -56,7 +56,7 @@ export function FirstRunScreen({ onAccept }: FirstRunScreenProps) {
           </h2>
           <p className="mt-1 text-xs leading-relaxed text-zinc-300">
             Este software no es un canal de denuncia ni tiene detección forense certificada de
-            CSAM. Si encontraste material de explotación infantil, reportalo directamente a:
+            CSAM. Si encontraste material de explotación infantil, repórtalo directamente a:
           </p>
           <ul className="mt-1.5 space-y-0.5 text-xs text-zinc-300">
             <li>

@@ -221,6 +221,63 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (source_id, item_key)
     );
     "#,
+    r#"
+    -- Fuente YouTube (catálogo temático cine/series/anime, ver plan
+    -- fuente_youtube.txt): BYO igual que `indexers`, cero filas semilla en
+    -- esta migración. El plan preveía sembrar 1-2 canales oficiales
+    -- verificados en vivo (mismo criterio que iptv_org_public), pero esa
+    -- verificación requiere una youtube_api_key real contra la Data API y
+    -- no hay una disponible en este entorno de desarrollo — sembrar sin
+    -- verificar sería alucinar una fuente "confirmada" que no se confirmó
+    -- (Mandato 1). Queda como ítem de backlog explícito, no omitido en
+    -- silencio. `category` la fija el usuario al agregar el canal, nunca
+    -- inferida. `channel_id`/`uploads_playlist_id` se resuelven y cachean
+    -- en el alta (ver youtube::resolve_channel) para no volver a pegarle a
+    -- channels.list en cada listado de videos. Se guardan ambos en vez de
+    -- derivar uploads_playlist_id de channel_id vía el truco no oficial
+    -- "reemplazar el prefijo UC por UU" — no está garantizado por la
+    -- documentación de la Data API, así que asumirlo sería el tipo de
+    -- comportamiento no verificado que el Mandato 4 prohíbe.
+    CREATE TABLE youtube_sources (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        channel_url TEXT NOT NULL,
+        channel_id TEXT,
+        uploads_playlist_id TEXT,
+        category TEXT NOT NULL CHECK (category IN ('cine', 'series', 'anime')),
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    "#,
+    r#"
+    -- Subtítulos (Parte A del plan, ver Planes_mejora_popcorn/subtitulos_ia.txt)
+    -- — solo media_items (Mi Colección) y Biblioteca Local, ambos con
+    -- duración fija y reproducidos por el <video> propio. `origin` distingue
+    -- lo subido/pegado por el usuario de lo traducido por IA o editado a
+    -- mano, nunca se pierde esa procedencia. `content` es el SRT completo
+    -- (no cues sueltas) — parseo/reserializado vive en el frontend
+    -- (src/lib/srt.ts), el backend solo persiste el blob.
+    CREATE TABLE subtitles (
+        id TEXT PRIMARY KEY,
+        media_item_id TEXT NOT NULL,
+        language TEXT NOT NULL,
+        origin TEXT NOT NULL CHECK (origin IN ('original', 'ai_translated', 'human_edited')),
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    "#,
+    r#"
+    -- Bug real reportado en vivo: el reproductor asumía file_idx=0 como "el
+    -- video" (ver resolve_media_item_stream_url) — pero un torrent real de
+    -- archive.org trae, además del/los video(s), transcripts/subtítulos/
+    -- miniaturas/metadata como archivos propios, y en orden alfabético el
+    -- índice 0 puede caer en cualquiera de esos (visto en vivo: un .asr.js
+    -- de 135KB, no un video). NULL para filas existentes — se resuelve una
+    -- vez, en la próxima alta/sanación de cada ítem (ver
+    -- sources::archive_org::resolve_primary_file_idx), no requiere backfill
+    -- inmediato ni bloquea nada mientras tanto.
+    ALTER TABLE media_items ADD COLUMN primary_file_idx INTEGER;
+    "#,
 ];
 
 fn db_path(app: &AppHandle) -> Result<PathBuf> {
@@ -450,6 +507,49 @@ mod tests {
             [],
         );
         assert!(result.is_err(), "el CHECK debe rechazar un source_kind fuera de ('url','file')");
+    }
+
+    #[test]
+    fn youtube_sources_table_has_no_seed_rows_yet() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM youtube_sources", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "sin youtube_api_key real para verificar en vivo, la migración no siembra canales (Mandato 1) — ver plan fuente_youtube.txt"
+        );
+    }
+
+    #[test]
+    fn youtube_sources_rejects_unknown_category() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let result = conn.execute(
+            "INSERT INTO youtube_sources (id, name, channel_url, category) \
+             VALUES ('x', 'Test', 'https://youtube.com/@test', 'documentales')",
+            [],
+        );
+        assert!(result.is_err(), "el CHECK debe rechazar una category fuera de ('cine','series','anime')");
+    }
+
+    #[test]
+    fn youtube_sources_accepts_each_valid_category() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        for (id, category) in [("a", "cine"), ("b", "series"), ("c", "anime")] {
+            conn.execute(
+                "INSERT INTO youtube_sources (id, name, channel_url, category) VALUES (?1, 'Test', 'https://youtube.com/@test', ?2)",
+                (id, category),
+            )
+            .unwrap();
+        }
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM youtube_sources", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 3);
     }
 
     #[test]

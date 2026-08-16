@@ -1,11 +1,12 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 
-// Un solo valor hoy — Torrents pasó a flyout del TopBar y Ajustes a panel
-// flotante (ninguno de los dos es una "vista" que reemplace <main>). Se deja
-// como union (no un literal suelto) porque Fase 3 suma una vista real
-// (Comunidades) y este es el punto de extensión.
-export type View = "biblioteca";
+// Torrents pasó a flyout del TopBar y Ajustes a panel flotante (ninguno de
+// los dos es una "vista" que reemplace <main>). "subtitulos" ocupa el punto
+// de extensión que este comentario ya preveía para una vista social — Fase 3
+// (Comunidades) se pospuso, ver primer_plan_mejora.txt "[2026-08-15]
+// Decisión de secuenciación".
+export type View = "biblioteca" | "subtitulos";
 
 interface SidebarProps {
   active: View;
@@ -58,6 +59,13 @@ const LibraryIcon = () => (
   </svg>
 );
 
+const SubtitlesIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-4 w-4">
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <path d="M7 14h4M13 14h4M7 10h10" />
+  </svg>
+);
+
 const SettingsIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-4 w-4">
     <circle cx="12" cy="12" r="3" />
@@ -98,6 +106,13 @@ export function Sidebar({ active, onSelect, onOpenAjustes }: SidebarProps) {
           isActive={active === "biblioteca"}
           isCollapsed={isCollapsed}
           onClick={() => onSelect("biblioteca")}
+        />
+        <NavItem
+          label="Subtítulos"
+          icon={<SubtitlesIcon />}
+          isActive={active === "subtitulos"}
+          isCollapsed={isCollapsed}
+          onClick={() => onSelect("subtitulos")}
         />
       </nav>
 

@@ -161,8 +161,12 @@ async fn curate_and_ping_bucket(
         return Ok(items);
     }
 
-    let ping_targets: Vec<(String, String)> =
-        items.iter().map(|i| (online_item_key(i), ping_target_for(i))).collect();
+    let recently_pinged = crate::availability_ping::recently_pinged_keys(db, source_id)?;
+    let ping_targets: Vec<(String, String)> = items
+        .iter()
+        .map(|i| (online_item_key(i), ping_target_for(i)))
+        .filter(|(key, _)| !recently_pinged.contains(key))
+        .collect();
     let http_for_ping = http.clone();
     let ping_fut = crate::availability_ping::ping_many(ping_targets, ping_semaphore, move |url| {
         let client = http_for_ping.clone();
@@ -580,6 +584,12 @@ mod tests {
                 .map(|i| crate::ai::ScoredCandidate { index: i, score: self.0 })
                 .collect())
         }
+        async fn translate(&self, _texts: &[String], _target_lang: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
+        async fn broaden_query(&self, _query: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
     }
 
     // Puerto sin listener en loopback: el ping falla rápido, sin red real
@@ -642,5 +652,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(score, Some(88));
+    }
+
+    #[tokio::test]
+    async fn curate_and_ping_bucket_skips_repinging_items_checked_within_the_ttl() {
+        let db = migrated_db();
+        let http = reqwest::Client::new();
+        // No-ruteable a propósito: si de verdad se re-pinguea, falla y el
+        // conteo de fallas sube — el test detecta eso.
+        let i = unroutable("recently_ok");
+        let key = online_item_key(&i);
+        crate::availability_ping::record_ping_results(&db, "src", &[(key.clone(), true)]).unwrap();
+
+        let result = curate_and_ping_bucket(&db, &http, crate::availability_ping::new_ping_semaphore(), "src", false, None, vec![i], None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 1, "un ítem pingueado ok hace poco no debe re-pinguearse ni caer, aunque el ping real fallaría");
+        let counts = crate::availability_ping::ping_failure_counts(&db, "src").unwrap();
+        assert_eq!(counts.get(&key), Some(&0), "el conteo de fallas no debe tocarse — no hubo re-ping real");
     }
 }

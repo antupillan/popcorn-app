@@ -2,7 +2,10 @@ use rusqlite::OptionalExtension;
 use serde::Serialize;
 use tauri::State;
 
-use super::{gemini::GeminiProvider, openai_compatible::OpenAiCompatibleProvider, AiProvider, StructuredQuery};
+use super::{
+    gemini::GeminiProvider, openai_compatible::OpenAiCompatibleProvider, AiProvider, ScoredCandidate,
+    StructuredQuery,
+};
 use crate::db::Db;
 use crate::keychain;
 
@@ -168,16 +171,97 @@ pub(crate) fn try_build_active_provider(db: &Db) -> Result<Option<Box<dyn AiProv
 #[tauri::command]
 pub async fn parse_query(db: State<'_, Db>, text: String) -> Result<StructuredQuery, String> {
     let provider = try_build_active_provider(&db)?
-        .ok_or_else(|| "no hay ningún proveedor de IA activo — configurá uno en Ajustes".to_string())?;
+        .ok_or_else(|| "no hay ningún proveedor de IA activo — configura uno en Ajustes".to_string())?;
     provider
         .parse_query(&text)
         .await
         .map_err(|e| format!("[{}] {e}", provider.name()))
 }
 
+/// Núcleo testable de `search_added_content_with_ai` (ver `SearchModal.tsx`)
+/// — separado del comando Tauri para no depender de `State` en tests,
+/// mismo patrón que `curate_youtube_videos_inner`/`curate_channels_inner`.
+/// Sin caché SQLite a propósito: no hay `source_id` estable para "todo lo
+/// que el usuario agregó combinado", y la lista cambia todo el tiempo.
+async fn search_added_content_with_ai_inner(
+    provider: Option<&dyn AiProvider>,
+    query: &str,
+    candidates: &[String],
+) -> Result<Vec<ScoredCandidate>, String> {
+    let provider = provider
+        .ok_or_else(|| "no hay ningún proveedor de IA activo — configura uno en Ajustes".to_string())?;
+    provider
+        .curate_by_hint(candidates, Some(query))
+        .await
+        .map_err(|e| format!("[{}] {e}", provider.name()))
+}
+
+#[tauri::command]
+pub async fn search_added_content_with_ai(
+    db: State<'_, Db>,
+    query: String,
+    candidates: Vec<String>,
+) -> Result<Vec<ScoredCandidate>, String> {
+    let provider = try_build_active_provider(&db)?;
+    search_added_content_with_ai_inner(provider.as_deref(), &query, &candidates).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+
+    struct FakeProvider;
+    #[async_trait]
+    impl AiProvider for FakeProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+        async fn parse_query(&self, _text: &str) -> anyhow::Result<StructuredQuery> {
+            unreachable!("no lo usa este test")
+        }
+        async fn curate_results(
+            &self,
+            _query: &StructuredQuery,
+            _candidates: &[String],
+        ) -> anyhow::Result<Vec<usize>> {
+            unreachable!("no lo usa este test")
+        }
+        async fn curate_by_hint(
+            &self,
+            candidates: &[String],
+            hint: Option<&str>,
+        ) -> anyhow::Result<Vec<ScoredCandidate>> {
+            assert_eq!(hint, Some("sintel"));
+            Ok(candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.to_lowercase().contains("sintel"))
+                .map(|(index, _)| ScoredCandidate { index, score: 90 })
+                .collect())
+        }
+        async fn translate(&self, _texts: &[String], _target_lang: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
+        async fn broaden_query(&self, _query: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
+    }
+
+    #[tokio::test]
+    async fn search_added_content_with_ai_fails_explicitly_without_active_provider() {
+        let result = search_added_content_with_ai_inner(None, "sintel", &["Sintel".to_string()]).await;
+        assert!(result.is_err(), "sin proveedor activo debe fallar explícito, no devolver vacío en silencio");
+    }
+
+    #[tokio::test]
+    async fn search_added_content_with_ai_ranks_real_candidates_via_curate_by_hint() {
+        let candidates = vec!["Sintel".to_string(), "Otra cosa".to_string()];
+        let result = search_added_content_with_ai_inner(Some(&FakeProvider), "sintel", &candidates)
+            .await
+            .unwrap();
+        assert_eq!(result, vec![ScoredCandidate { index: 0, score: 90 }]);
+    }
 
     #[test]
     fn build_provider_rejects_unknown_kind() {

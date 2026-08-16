@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import type { Channel, IptvSource, RecordingInfo } from "../types";
-import { AddIptvSourceModal } from "./AddIptvSourceModal";
 
 type Tab = "channels" | "sources" | "recordings";
 
@@ -98,7 +97,7 @@ function ChannelsTab({ onPlayChannel }: Pick<IptvViewProps, "onPlayChannel">) {
   if (channels.length === 0) {
     return (
       <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
-        No hay canales — agregá una fuente en la pestaña "Fuentes".
+        No hay canales — agrega una fuente en la pestaña "Fuentes".
       </p>
     );
   }
@@ -165,7 +164,6 @@ function SourcesTab() {
   const [sources, setSources] = useState<IptvSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [modalOpen, setModalOpen] = useState(false);
 
   function refresh() {
     setLoading(true);
@@ -180,15 +178,13 @@ function SourcesTab() {
 
   return (
     <div className="flex flex-col gap-3 p-4">
-      <button
-        onClick={() => setModalOpen(true)}
-        className="self-start rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--accent-hover)]"
-      >
-        + Agregar fuente
-      </button>
-
       {loading && <p className="text-xs text-zinc-500 dark:text-zinc-400">Cargando fuentes…</p>}
       {error && <p className="text-xs text-red-500">{error}</p>}
+      {!loading && sources.length === 0 && (
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          No hay fuentes — usa el botón "+" de arriba para agregar una.
+        </p>
+      )}
 
       <ul className="flex flex-col gap-1.5">
         {sources.map((s) => (
@@ -219,10 +215,6 @@ function SourcesTab() {
           </li>
         ))}
       </ul>
-
-      {modalOpen && (
-        <AddIptvSourceModal onClose={() => setModalOpen(false)} onAdded={refresh} />
-      )}
     </div>
   );
 }

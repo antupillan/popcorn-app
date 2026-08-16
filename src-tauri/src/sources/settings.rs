@@ -20,7 +20,7 @@ pub async fn list_source_settings(db: State<'_, Db>) -> Result<Vec<SourceSetting
     let mut stmt = conn
         .prepare(
             "SELECT s.id, \
-               COALESCE(i.name, v.name, \
+               COALESCE(i.name, v.name, y.name, \
                  CASE s.id \
                    WHEN 'archive_org' THEN 'archive.org' \
                    WHEN 'public_domain_torrents' THEN 'Public Domain Torrents' \
@@ -33,6 +33,7 @@ pub async fn list_source_settings(db: State<'_, Db>) -> Result<Vec<SourceSetting
              FROM source_settings s \
              LEFT JOIN indexers i ON i.id = s.id \
              LEFT JOIN iptv_sources v ON v.id = s.id \
+             LEFT JOIN youtube_sources y ON y.id = s.id \
              ORDER BY (s.id = 'archive_org') DESC, s.created_at ASC, s.rowid ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -95,10 +96,19 @@ mod tests {
         conn.execute("INSERT INTO source_settings (id) VALUES ('iptv1')", [])
             .unwrap();
 
+        conn.execute(
+            "INSERT INTO youtube_sources (id, name, channel_url, category) \
+             VALUES ('yt1', 'Mi canal de anime', 'https://youtube.com/@test', 'anime')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO source_settings (id) VALUES ('yt1')", [])
+            .unwrap();
+
         let mut stmt = conn
             .prepare(
                 "SELECT s.id, \
-                   COALESCE(i.name, v.name, \
+                   COALESCE(i.name, v.name, y.name, \
                      CASE s.id \
                        WHEN 'archive_org' THEN 'archive.org' \
                        WHEN 'public_domain_torrents' THEN 'Public Domain Torrents' \
@@ -110,6 +120,7 @@ mod tests {
                  FROM source_settings s \
                  LEFT JOIN indexers i ON i.id = s.id \
                  LEFT JOIN iptv_sources v ON v.id = s.id \
+                 LEFT JOIN youtube_sources y ON y.id = s.id \
                  ORDER BY (s.id = 'archive_org') DESC, s.created_at ASC, s.rowid ASC",
             )
             .unwrap();
@@ -137,6 +148,7 @@ mod tests {
                 ("feature_films".to_string(), "Cine clásico (archive.org)".to_string()),
                 ("idx1".to_string(), "Mi Nyaa".to_string()),
                 ("iptv1".to_string(), "Mi lista IPTV".to_string()),
+                ("yt1".to_string(), "Mi canal de anime".to_string()),
             ]
         );
     }

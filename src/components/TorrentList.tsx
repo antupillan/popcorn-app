@@ -1,9 +1,12 @@
+import { useState } from "react";
 import { api } from "../lib/api";
-import type { TorrentInfo } from "../types";
+import type { MediaItem, TorrentInfo } from "../types";
 
 interface TorrentListProps {
   torrents: TorrentInfo[];
   onChanged: () => void;
+  mediaItems: MediaItem[];
+  onPlayMedia: (item: MediaItem) => void;
 }
 
 function formatBytes(n: number): string {
@@ -20,7 +23,13 @@ const STATE_LABEL: Record<TorrentInfo["state"], string> = {
   error: "Error",
 };
 
-export function TorrentList({ torrents, onChanged }: TorrentListProps) {
+export function TorrentList({ torrents, onChanged, mediaItems, onPlayMedia }: TorrentListProps) {
+  // Antes "Quitar" siempre mandaba delete_files: false — nunca había forma
+  // de borrar los archivos ya descargados desde la UI, quedaban huérfanos
+  // en disco para siempre (reportado en vivo). Checkbox explícito por
+  // torrent, default apagado (acción destructiva, nunca opt-out).
+  const [deleteFiles, setDeleteFiles] = useState<Record<string, boolean>>({});
+
   if (torrents.length === 0) {
     return (
       <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
@@ -33,6 +42,11 @@ export function TorrentList({ torrents, onChanged }: TorrentListProps) {
     <ul className="flex flex-col gap-2 p-4">
       {torrents.map((t) => {
         const pct = t.total_bytes > 0 ? (t.progress_bytes / t.total_bytes) * 100 : 0;
+        // Todo torrent agregado queda registrado en media_items
+        // (add_torrent_inner en el backend) — puede no estar todavía si
+        // el motor se reinició y aún no sanó la fila (ver healing_tests),
+        // por eso el botón es condicional, no asumido.
+        const media = mediaItems.find((m) => m.engine_torrent_id === t.id);
         return (
           <li
             key={t.id}
@@ -43,6 +57,14 @@ export function TorrentList({ torrents, onChanged }: TorrentListProps) {
                 {t.name ?? t.info_hash}
               </p>
               <div className="flex shrink-0 items-center gap-1.5">
+                {media && (
+                  <button
+                    onClick={() => onPlayMedia(media)}
+                    className="rounded-md border border-[var(--accent)] px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white dark:text-[var(--accent-fg)]"
+                  >
+                    Reproducir
+                  </button>
+                )}
                 <button
                   onClick={() => api.pauseTorrent(t.id).then(onChanged)}
                   className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
@@ -50,13 +72,22 @@ export function TorrentList({ torrents, onChanged }: TorrentListProps) {
                   {t.state === "paused" ? "Reanudar" : "Pausar"}
                 </button>
                 <button
-                  onClick={() => api.removeTorrent(t.id, false).then(onChanged)}
+                  onClick={() => api.removeTorrent(t.id, !!deleteFiles[t.id]).then(onChanged)}
                   className="rounded-md border border-red-300 px-2 py-1 text-[11px] text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
                 >
                   Quitar
                 </button>
               </div>
             </div>
+
+            <label className="flex items-center gap-1.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+              <input
+                type="checkbox"
+                checked={!!deleteFiles[t.id]}
+                onChange={(e) => setDeleteFiles((prev) => ({ ...prev, [t.id]: e.target.checked }))}
+              />
+              Borrar también los archivos del disco al quitar
+            </label>
 
             <div className="h-1.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
               <div

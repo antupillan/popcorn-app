@@ -113,6 +113,37 @@ pub(crate) fn record_ping_results(db: &Db, source_id: &str, results: &[(String, 
     Ok(())
 }
 
+/// Ventana dentro de la cual un ítem ya pingueado no vuelve a pinguearse
+/// — reduce carga real contra el origen en recargas seguidas de la misma
+/// grilla (cambiar de pestaña y volver, la lupa pidiendo el mismo
+/// catálogo por separado) sin perder frescura real: 30 min es corto
+/// frente a cuánto tarda un ítem en desaparecer de archive.org de verdad.
+const PING_SKIP_TTL_MINUTES: i64 = 30;
+
+/// Ítems ya pingueados hace menos de `PING_SKIP_TTL_MINUTES` — el caller
+/// los excluye del próximo lote de `ping_many`, reusando el resultado que
+/// ya tienen en `consecutive_ping_failures`/`ping_failure_counts`. Antes,
+/// cada carga de la grilla repingueaba absolutamente todo sin distinguir
+/// "nunca pingueado" de "pingueado hace 10 segundos" — bajo un origen ya
+/// degradado (archive.org respondiendo ~6-7s por request, verificado en
+/// vivo), esa repetición innecesaria suma carga real de más. Solo lee
+/// datos locales ya guardados — sin superficie nueva, ver Mandato de
+/// seguridad.
+pub(crate) fn recently_pinged_keys(db: &Db, source_id: &str) -> Result<std::collections::HashSet<String>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let offset = format!("-{PING_SKIP_TTL_MINUTES} minutes");
+    let mut stmt = conn
+        .prepare(
+            "SELECT item_key FROM curation_cache \
+             WHERE source_id = ?1 AND last_ping_at > datetime('now', ?2)",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![source_id, offset], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+
 /// Lee `consecutive_ping_failures` actuales para filtrar el grid — se
 /// llama después de `record_ping_results`, mismo `source_id`.
 pub(crate) fn ping_failure_counts(db: &Db, source_id: &str) -> Result<HashMap<String, i64>, String> {
@@ -197,6 +228,41 @@ mod tests {
             .unwrap();
         assert_eq!(included, 1);
         assert_eq!(score, Some(77));
+    }
+
+    #[test]
+    fn recently_pinged_keys_returns_items_pinged_within_the_ttl() {
+        let db = migrated_db();
+        record_ping_results(&db, "src", &[("a".to_string(), true)]).unwrap();
+        let recent = recently_pinged_keys(&db, "src").unwrap();
+        assert!(recent.contains("a"), "un ítem recién pingueado debe estar en el set de 'no repinguear'");
+    }
+
+    #[test]
+    fn recently_pinged_keys_ignores_items_never_pinged_or_from_otra_fuente() {
+        let db = migrated_db();
+        record_ping_results(&db, "otra_fuente", &[("a".to_string(), true)]).unwrap();
+        let recent = recently_pinged_keys(&db, "src").unwrap();
+        assert!(recent.is_empty(), "el filtro es por source_id — un ping de otra fuente no debe contar acá");
+    }
+
+    #[test]
+    fn recently_pinged_keys_excludes_items_fuera_de_la_ventana_ttl() {
+        let db = migrated_db();
+        {
+            let conn = db.0.lock().unwrap();
+            // Simula un ping de hace más de PING_SKIP_TTL_MINUTES — insertado
+            // directo en vez de mockear el reloj, más simple y suficiente
+            // para probar el borde de la consulta SQL.
+            conn.execute(
+                "INSERT INTO curation_cache (source_id, item_key, last_ping_at) \
+                 VALUES ('src', 'stale', datetime('now', '-999 minutes'))",
+                [],
+            )
+            .unwrap();
+        }
+        let recent = recently_pinged_keys(&db, "src").unwrap();
+        assert!(!recent.contains("stale"), "un ping viejo, fuera de la ventana TTL, no debe evitar el re-ping");
     }
 
     #[tokio::test]

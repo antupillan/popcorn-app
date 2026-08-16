@@ -65,7 +65,7 @@ export function LocalLibraryTab({ onPlayLocal }: LocalLibraryTabProps) {
 
       {!folder && (
         <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
-          Elegí una carpeta para ver tus archivos de video locales acá.
+          Elige una carpeta para ver tus archivos de video locales aquí.
         </p>
       )}
 

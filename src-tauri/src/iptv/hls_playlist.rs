@@ -4,6 +4,12 @@ use m3u8_rs::{parse_playlist_res, KeyMethod, Playlist};
 #[derive(Debug)]
 pub struct Segment {
     pub uri: String,
+    // Se escribe en producción (parseo real del manifest) pero hoy solo se
+    // lee en tests - el grabador (recorder.rs) concatena segmentos sin
+    // necesitar la duración individual. #[cfg(test)] no aplica acá: el
+    // campo se construye en código de producción, cfg-earlo rompería ese
+    // build. `#[allow]` documenta que es dead code real, no un error.
+    #[allow(dead_code)]
     pub duration: f32,
 }
 
@@ -49,7 +55,7 @@ pub fn parse_media_playlist(body: &[u8]) -> anyhow::Result<MediaPlaylist> {
         Playlist::MediaPlaylist(m) => m,
         Playlist::MasterPlaylist(_) => anyhow::bail!(
             "manifest multi-bitrate (playlist maestra) no soportado en v1 para grabación — \
-             elegí la URL de una variante específica, no la maestra"
+             elige la URL de una variante específica, no la maestra"
         ),
     };
 

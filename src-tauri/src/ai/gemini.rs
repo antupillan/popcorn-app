@@ -3,10 +3,12 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    build_curation_user_text, build_hint_curation_user_text, extract_index_list,
-    extract_scored_list, extract_structured_query, AiProvider, ScoredCandidate, StructuredQuery,
-    CURATE_BY_HINT_EXAMPLE_ASSISTANT, CURATE_BY_HINT_EXAMPLE_USER, CURATE_BY_HINT_SYSTEM_PROMPT,
-    CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
+    build_curation_user_text, build_hint_curation_user_text, build_translate_user_text,
+    extract_broadened_terms, extract_index_list, extract_scored_list, extract_structured_query,
+    extract_translated_lines, AiProvider, ScoredCandidate, StructuredQuery,
+    BROADEN_QUERY_SYSTEM_PROMPT, CURATE_BY_HINT_EXAMPLE_ASSISTANT, CURATE_BY_HINT_EXAMPLE_USER,
+    CURATE_BY_HINT_SYSTEM_PROMPT, CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
+    TRANSLATE_SYSTEM_PROMPT,
 };
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
@@ -22,7 +24,7 @@ impl GeminiProvider {
         Self {
             api_key,
             model,
-            client: reqwest::Client::new(),
+            client: crate::commands::build_http_client(),
         }
     }
 }
@@ -86,6 +88,34 @@ fn parse_hint_curation_response_body(body: &str) -> anyhow::Result<Vec<ScoredCan
         .map(|p| p.text)
         .ok_or_else(|| anyhow::anyhow!("Gemini no devolvió contenido en la respuesta"))?;
     extract_scored_list(&raw)
+}
+
+/// Igual patrón que los demás `parse_*_response_body` — separado del fetch
+/// para poder testear contra una fixture sin red real.
+fn parse_translate_response_body(body: &str) -> anyhow::Result<Vec<String>> {
+    let resp: GenerateContentResponse = serde_json::from_str(body)?;
+    let raw = resp
+        .candidates
+        .into_iter()
+        .next()
+        .and_then(|c| c.content.parts.into_iter().next())
+        .map(|p| p.text)
+        .ok_or_else(|| anyhow::anyhow!("Gemini no devolvió contenido en la respuesta"))?;
+    extract_translated_lines(&raw)
+}
+
+/// Igual patrón que los demás `parse_*_response_body` — separado del fetch
+/// para poder testear contra una fixture sin red real.
+fn parse_broaden_query_response_body(body: &str) -> anyhow::Result<Vec<String>> {
+    let resp: GenerateContentResponse = serde_json::from_str(body)?;
+    let raw = resp
+        .candidates
+        .into_iter()
+        .next()
+        .and_then(|c| c.content.parts.into_iter().next())
+        .map(|p| p.text)
+        .ok_or_else(|| anyhow::anyhow!("Gemini no devolvió contenido en la respuesta"))?;
+    extract_broadened_terms(&raw)
 }
 
 #[async_trait]
@@ -167,6 +197,54 @@ impl AiProvider for GeminiProvider {
         .await?;
         parse_hint_curation_response_body(&raw_body)
     }
+
+    async fn translate(&self, texts: &[String], target_lang: &str) -> anyhow::Result<Vec<String>> {
+        let url = format!("{API_BASE}/models/{}:generateContent", self.model);
+        let text = build_translate_user_text(texts, target_lang);
+        let body = json!({
+            "contents": [{"parts": [{"text": text}]}],
+            "systemInstruction": {"parts": [{"text": TRANSLATE_SYSTEM_PROMPT}]},
+            "generationConfig": {"responseMimeType": "application/json"}
+        });
+        let raw_body = crate::http_retry::send_with_retry(|| {
+            self.client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .json(&body)
+        })
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+        let lines = parse_translate_response_body(&raw_body)?;
+        anyhow::ensure!(
+            lines.len() == texts.len(),
+            "Gemini devolvió {} líneas traducidas, se esperaban {} — no se puede confiar en la alineación de timestamps",
+            lines.len(),
+            texts.len()
+        );
+        Ok(lines)
+    }
+
+    async fn broaden_query(&self, query: &str) -> anyhow::Result<Vec<String>> {
+        let url = format!("{API_BASE}/models/{}:generateContent", self.model);
+        let body = json!({
+            "contents": [{"parts": [{"text": query}]}],
+            "systemInstruction": {"parts": [{"text": BROADEN_QUERY_SYSTEM_PROMPT}]},
+            "generationConfig": {"responseMimeType": "application/json"}
+        });
+        let raw_body = crate::http_retry::send_with_retry(|| {
+            self.client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .json(&body)
+        })
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+        parse_broaden_query_response_body(&raw_body)
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +318,49 @@ mod tests {
     fn hint_curation_errors_when_no_candidates() {
         let body = r#"{"candidates": []}"#;
         assert!(parse_hint_curation_response_body(body).is_err());
+    }
+
+    #[test]
+    fn parses_real_shaped_translate_response() {
+        let body = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "{\"lines\": [\"Hello\", \"World\"]}"}],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }]
+        }"#;
+        assert_eq!(parse_translate_response_body(body).unwrap(), vec!["Hello".to_string(), "World".to_string()]);
+    }
+
+    #[test]
+    fn translate_errors_when_no_candidates() {
+        let body = r#"{"candidates": []}"#;
+        assert!(parse_translate_response_body(body).is_err());
+    }
+
+    #[test]
+    fn parses_real_shaped_broaden_query_response() {
+        let body = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "{\"terms\": [\"One Piece\", \"ワンピース\"]}"}],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }]
+        }"#;
+        assert_eq!(
+            parse_broaden_query_response_body(body).unwrap(),
+            vec!["One Piece".to_string(), "ワンピース".to_string()]
+        );
+    }
+
+    #[test]
+    fn broaden_query_errors_when_no_candidates() {
+        let body = r#"{"candidates": []}"#;
+        assert!(parse_broaden_query_response_body(body).is_err());
     }
 
     #[tokio::test]

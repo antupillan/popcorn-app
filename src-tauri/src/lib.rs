@@ -10,8 +10,11 @@ mod iptv;
 mod keychain;
 mod local_library;
 mod online_library;
+mod opensubtitles;
 mod os_accent;
 mod sources;
+mod subtitles;
+mod youtube;
 
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -30,8 +33,10 @@ async fn build_embedded(
     downloads_dir: std::path::PathBuf,
     http_fallback: engine::stream_server::HttpFallbackMap,
     local_files: engine::stream_server::LocalFileMap,
+    socks_proxy_url: Option<String>,
 ) -> anyhow::Result<EmbeddedRqbit> {
-    let session = engine::embedded_rqbit::create_session(downloads_dir.clone()).await?;
+    let session =
+        engine::embedded_rqbit::create_session_with_proxy(downloads_dir.clone(), socks_proxy_url).await?;
     let stream_port =
         engine::stream_server::spawn(Some(session.clone()), http_fallback.clone(), local_files.clone()).await?;
     Ok(EmbeddedRqbit::new(session, downloads_dir, stream_port, http_fallback, local_files))
@@ -49,9 +54,10 @@ async fn build_active_engine(
     local_files: engine::stream_server::LocalFileMap,
 ) -> anyhow::Result<(Arc<dyn TorrentEngine>, Option<String>)> {
     let kind = app_settings::read_active_engine_kind(db).unwrap_or_else(|_| "embedded".to_string());
+    let socks_proxy_url = keychain::get_secret(app_settings::TORRENT_PROXY_SECRET_ID).unwrap_or(None);
 
     if kind != "qbittorrent" {
-        let embedded = build_embedded(downloads_dir, http_fallback, local_files).await?;
+        let embedded = build_embedded(downloads_dir, http_fallback, local_files, socks_proxy_url).await?;
         return Ok((Arc::new(embedded), None));
     }
 
@@ -76,7 +82,7 @@ async fn build_active_engine(
         Ok(qb) => Ok((Arc::new(qb), None)),
         Err(reason) => {
             eprintln!("[popcorn] no se pudo conectar al qBittorrent configurado: {reason}");
-            let embedded = build_embedded(downloads_dir, http_fallback, local_files).await?;
+            let embedded = build_embedded(downloads_dir, http_fallback, local_files, socks_proxy_url).await?;
             Ok((
                 Arc::new(embedded),
                 Some(format!(
@@ -119,7 +125,8 @@ pub fn run() {
 
             app.manage(EngineState(active_engine));
             app.manage(EngineFallbackWarning(fallback_warning));
-            app.manage(HttpClient(reqwest::Client::new()));
+            app.manage(HttpClient(commands::build_http_client()));
+            app.manage(indexers::torrent_health::TorrentHealthState::default());
 
             Ok(())
         })
@@ -145,11 +152,14 @@ pub fn run() {
             indexers::toggle_indexer,
             indexers::test_indexer,
             indexers::search_indexers,
+            indexers::search_indexers_with_ai,
+            indexers::torrent_health::check_torrent_health_batch,
             ai::commands::list_ai_providers,
             ai::commands::add_ai_provider,
             ai::commands::remove_ai_provider,
             ai::commands::set_active_ai_provider,
             ai::commands::parse_query,
+            ai::commands::search_added_content_with_ai,
             sources::settings::list_source_settings,
             sources::settings::set_source_curation_enabled,
             online_library::browse_online_library,
@@ -161,6 +171,12 @@ pub fn run() {
             app_settings::get_torrent_engine_config,
             app_settings::set_torrent_engine_config,
             app_settings::test_torrent_engine,
+            app_settings::set_torrent_proxy_url,
+            app_settings::get_torrent_proxy_status,
+            app_settings::remove_torrent_proxy_url,
+            commands::set_catalog_proxy_url,
+            commands::get_catalog_proxy_status,
+            commands::remove_catalog_proxy_url,
             local_library::get_local_library_folder,
             local_library::set_local_library_folder,
             local_library::list_local_files,
@@ -178,6 +194,25 @@ pub fn run() {
             iptv::recorder::list_recordings,
             iptv::recorder::get_recording_stream_url,
             iptv::recorder::delete_recording,
+            youtube::list_youtube_sources,
+            youtube::add_youtube_source,
+            youtube::remove_youtube_source,
+            youtube::toggle_youtube_source,
+            youtube::set_youtube_api_key,
+            youtube::get_youtube_api_key_status,
+            youtube::remove_youtube_api_key,
+            youtube::list_youtube_videos,
+            youtube::curate_youtube_videos,
+            subtitles::list_subtitles,
+            subtitles::add_subtitle_text,
+            subtitles::remove_subtitle,
+            subtitles::translate_subtitle_texts,
+            opensubtitles::search_opensubtitles,
+            opensubtitles::download_opensubtitles_subtitle,
+            opensubtitles::set_opensubtitles_credentials,
+            opensubtitles::get_opensubtitles_credentials_status,
+            opensubtitles::remove_opensubtitles_credentials,
+            youtube::search_youtube_videos_in_added_channels,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

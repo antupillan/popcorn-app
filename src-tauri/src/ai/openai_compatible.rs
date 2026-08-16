@@ -3,10 +3,12 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    build_curation_user_text, build_hint_curation_user_text, extract_index_list,
-    extract_scored_list, extract_structured_query, AiProvider, ScoredCandidate, StructuredQuery,
-    CURATE_BY_HINT_EXAMPLE_ASSISTANT, CURATE_BY_HINT_EXAMPLE_USER, CURATE_BY_HINT_SYSTEM_PROMPT,
-    CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
+    build_curation_user_text, build_hint_curation_user_text, build_translate_user_text,
+    extract_broadened_terms, extract_index_list, extract_scored_list, extract_structured_query,
+    extract_translated_lines, AiProvider, ScoredCandidate, StructuredQuery,
+    BROADEN_QUERY_SYSTEM_PROMPT, CURATE_BY_HINT_EXAMPLE_ASSISTANT, CURATE_BY_HINT_EXAMPLE_USER,
+    CURATE_BY_HINT_SYSTEM_PROMPT, CURATE_RESULTS_SYSTEM_PROMPT, PARSE_QUERY_SYSTEM_PROMPT,
+    TRANSLATE_SYSTEM_PROMPT,
 };
 
 /// Un solo adaptador para cualquier proveedor que hable el formato de
@@ -28,7 +30,7 @@ impl OpenAiCompatibleProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             model,
-            client: reqwest::Client::new(),
+            client: crate::commands::build_http_client(),
         }
     }
 }
@@ -87,6 +89,32 @@ fn parse_hint_curation_response_body(body: &str) -> anyhow::Result<Vec<ScoredCan
         .map(|c| c.message.content)
         .ok_or_else(|| anyhow::anyhow!("el proveedor no devolvió ningún choice"))?;
     extract_scored_list(&raw)
+}
+
+/// Igual patrón que los demás `parse_*_response_body` — separado del fetch
+/// para poder testear contra una fixture sin red real.
+fn parse_translate_response_body(body: &str) -> anyhow::Result<Vec<String>> {
+    let resp: ChatCompletionResponse = serde_json::from_str(body)?;
+    let raw = resp
+        .choices
+        .into_iter()
+        .next()
+        .map(|c| c.message.content)
+        .ok_or_else(|| anyhow::anyhow!("el proveedor no devolvió ningún choice"))?;
+    extract_translated_lines(&raw)
+}
+
+/// Igual patrón que los demás `parse_*_response_body` — separado del fetch
+/// para poder testear contra una fixture sin red real.
+fn parse_broaden_query_response_body(body: &str) -> anyhow::Result<Vec<String>> {
+    let resp: ChatCompletionResponse = serde_json::from_str(body)?;
+    let raw = resp
+        .choices
+        .into_iter()
+        .next()
+        .map(|c| c.message.content)
+        .ok_or_else(|| anyhow::anyhow!("el proveedor no devolvió ningún choice"))?;
+    extract_broadened_terms(&raw)
 }
 
 #[async_trait]
@@ -178,6 +206,62 @@ impl AiProvider for OpenAiCompatibleProvider {
         .await?;
         parse_hint_curation_response_body(&raw_body)
     }
+
+    async fn translate(&self, texts: &[String], target_lang: &str) -> anyhow::Result<Vec<String>> {
+        let url = format!("{}/chat/completions", self.base_url);
+        let text = build_translate_user_text(texts, target_lang);
+        let body = json!({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": TRANSLATE_SYSTEM_PROMPT},
+                {"role": "user", "content": text}
+            ],
+            "response_format": {"type": "json_object"}
+        });
+        let raw_body = crate::http_retry::send_with_retry(|| {
+            let mut req = self.client.post(&url).json(&body);
+            if let Some(key) = &self.api_key {
+                req = req.bearer_auth(key);
+            }
+            req
+        })
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+        let lines = parse_translate_response_body(&raw_body)?;
+        anyhow::ensure!(
+            lines.len() == texts.len(),
+            "el proveedor devolvió {} líneas traducidas, se esperaban {} — no se puede confiar en la alineación de timestamps",
+            lines.len(),
+            texts.len()
+        );
+        Ok(lines)
+    }
+
+    async fn broaden_query(&self, query: &str) -> anyhow::Result<Vec<String>> {
+        let url = format!("{}/chat/completions", self.base_url);
+        let body = json!({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": BROADEN_QUERY_SYSTEM_PROMPT},
+                {"role": "user", "content": query}
+            ],
+            "response_format": {"type": "json_object"}
+        });
+        let raw_body = crate::http_retry::send_with_retry(|| {
+            let mut req = self.client.post(&url).json(&body);
+            if let Some(key) = &self.api_key {
+                req = req.bearer_auth(key);
+            }
+            req
+        })
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+        parse_broaden_query_response_body(&raw_body)
+    }
 }
 
 #[cfg(test)]
@@ -255,6 +339,51 @@ mod tests {
     fn hint_curation_errors_when_no_choices() {
         let body = r#"{"choices": []}"#;
         assert!(parse_hint_curation_response_body(body).is_err());
+    }
+
+    #[test]
+    fn parses_real_shaped_translate_response() {
+        let body = r#"{
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"lines\": [\"Hello\", \"World\"]}"
+                },
+                "finish_reason": "stop"
+            }]
+        }"#;
+        assert_eq!(parse_translate_response_body(body).unwrap(), vec!["Hello".to_string(), "World".to_string()]);
+    }
+
+    #[test]
+    fn translate_errors_when_no_choices() {
+        let body = r#"{"choices": []}"#;
+        assert!(parse_translate_response_body(body).is_err());
+    }
+
+    #[test]
+    fn parses_real_shaped_broaden_query_response() {
+        let body = r#"{
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"terms\": [\"One Piece\", \"ワンピース\"]}"
+                },
+                "finish_reason": "stop"
+            }]
+        }"#;
+        assert_eq!(
+            parse_broaden_query_response_body(body).unwrap(),
+            vec!["One Piece".to_string(), "ワンピース".to_string()]
+        );
+    }
+
+    #[test]
+    fn broaden_query_errors_when_no_choices() {
+        let body = r#"{"choices": []}"#;
+        assert!(parse_broaden_query_response_body(body).is_err());
     }
 
     #[test]

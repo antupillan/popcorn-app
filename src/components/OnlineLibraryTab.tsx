@@ -25,13 +25,19 @@ export function OnlineLibraryTab({ mediaItems, onPlayMedia, onPlayOnline, onAdde
   const [pdtError, setPdtError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
 
   useEffect(() => {
+    // React.StrictMode (ver main.tsx) invoca este efecto dos veces en dev
+    // para detectar justo este tipo de bug — sin el flag `ignore`, las dos
+    // corridas pisaban/concatenaban resultados entre sí (visto en vivo:
+    // todo el catálogo duplicado, warning de key repetida en cada ítem).
+    let ignore = false;
+
     setLoading(true);
     api
       .browseOnlineLibrary()
       .then((fastItems) => {
+        if (ignore) return;
         setItems(fastItems);
         // Curación en segundo plano, nunca antes del render rápido — con
         // un proveedor de IA inalcanzable puede tardar bastante, y no debe
@@ -41,6 +47,7 @@ export function OnlineLibraryTab({ mediaItems, onPlayMedia, onPlayOnline, onAdde
         api
           .curateOnlineLibrary(fastItems)
           .then((curated) => {
+            if (ignore) return;
             setItems((prev) => [
               ...curated,
               ...prev.filter((i) => i.kind === "public_domain_torrents"),
@@ -48,8 +55,8 @@ export function OnlineLibraryTab({ mediaItems, onPlayMedia, onPlayOnline, onAdde
           })
           .catch(() => {});
       })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
+      .catch((e) => !ignore && setError(String(e)))
+      .finally(() => !ignore && setLoading(false));
 
     // Public Domain Torrents es mucho más lento que el resto (~8s vs ~1.5s,
     // medido en vivo — ver plan, sección "investigar lentitud") — se pide
@@ -58,9 +65,13 @@ export function OnlineLibraryTab({ mediaItems, onPlayMedia, onPlayOnline, onAdde
     setPdtLoading(true);
     api
       .browsePublicDomainTorrents()
-      .then((pdtItems) => setItems((prev) => [...prev, ...pdtItems]))
-      .catch((e) => setPdtError(String(e)))
-      .finally(() => setPdtLoading(false));
+      .then((pdtItems) => !ignore && setItems((prev) => [...prev, ...pdtItems]))
+      .catch((e) => !ignore && setPdtError(String(e)))
+      .finally(() => !ignore && setPdtLoading(false));
+
+    return () => {
+      ignore = true;
+    };
   }, []);
 
   // undefined si el ítem todavía no está en la colección del usuario —
@@ -106,25 +117,11 @@ export function OnlineLibraryTab({ mediaItems, onPlayMedia, onPlayOnline, onAdde
     );
   }
 
-  const filtered = items.filter((i) => i.title.toLowerCase().includes(query.toLowerCase()));
-
   return (
     <div className="flex flex-col gap-2 p-4">
-      <input
-        type="text"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Buscar por nombre…"
-        className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[var(--accent-hover)] focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-      />
       {message && <p className="text-xs text-[var(--accent)] dark:text-[var(--accent-fg)]">{message}</p>}
-      {filtered.length === 0 && (
-        <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
-          Sin resultados para "{query}".
-        </p>
-      )}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-        {filtered.map((item) => {
+        {items.map((item) => {
           const key = `${item.kind}:${item.identifier}`;
           const existing = findExisting(item);
           return (

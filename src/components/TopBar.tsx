@@ -1,4 +1,3 @@
-import { TorrentsFlyout } from "./TorrentsFlyout";
 import type { Theme } from "../App";
 import type { TorrentInfo } from "../types";
 
@@ -6,12 +5,11 @@ interface TopBarProps {
   downloadSpeedMbps: number;
   uploadSpeedMbps: number;
   torrents: TorrentInfo[];
-  torrentsOpen: boolean;
   onToggleTorrents: () => void;
-  onTorrentsChanged: () => void;
   theme: Theme;
   onCycleTheme: () => void;
-  onOpenAddTorrent: () => void;
+  onOpenAddSource: () => void;
+  onOpenSearch: () => void;
 }
 
 const THEME_LABEL: Record<Theme, string> = { system: "Sistema", light: "Claro", dark: "Oscuro" };
@@ -25,43 +23,37 @@ export function TopBar({
   downloadSpeedMbps,
   uploadSpeedMbps,
   torrents,
-  torrentsOpen,
   onToggleTorrents,
-  onTorrentsChanged,
   theme,
   onCycleTheme,
-  onOpenAddTorrent,
+  onOpenAddSource,
+  onOpenSearch,
 }: TopBarProps) {
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 bg-white/80 px-4 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/80">
-      <div className="relative">
-        <button
-          onClick={onToggleTorrents}
-          className="flex items-center gap-4 rounded-lg px-2 py-1 font-mono text-xs hover:bg-zinc-100 dark:hover:bg-zinc-900"
-          title="Ver torrents activos"
-        >
-          <span className="flex items-center gap-1.5 text-[var(--accent)] dark:text-[var(--accent-fg)]">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
-              <path d="M12 19V5m0 14-5-5m5 5 5-5" />
-            </svg>
-            {formatSpeed(downloadSpeedMbps)}
+      <button
+        onClick={onToggleTorrents}
+        className="flex items-center gap-4 rounded-lg px-2 py-1 font-mono text-xs hover:bg-zinc-100 dark:hover:bg-zinc-900"
+        title="Ver torrents activos"
+      >
+        <span className="flex items-center gap-1.5 text-[var(--accent)] dark:text-[var(--accent-fg)]">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
+            <path d="M12 19V5m0 14-5-5m5 5 5-5" />
+          </svg>
+          {formatSpeed(downloadSpeedMbps)}
+        </span>
+        <span className="flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
+            <path d="M12 5v14m0-14 5 5m-5-5-5 5" />
+          </svg>
+          {formatSpeed(uploadSpeedMbps)}
+        </span>
+        {torrents.length > 0 && (
+          <span className="rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--accent)] dark:text-[var(--accent-fg)]">
+            {torrents.length}
           </span>
-          <span className="flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
-              <path d="M12 5v14m0-14 5 5m-5-5-5 5" />
-            </svg>
-            {formatSpeed(uploadSpeedMbps)}
-          </span>
-          {torrents.length > 0 && (
-            <span className="rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--accent)] dark:text-[var(--accent-fg)]">
-              {torrents.length}
-            </span>
-          )}
-        </button>
-        {torrentsOpen && (
-          <TorrentsFlyout torrents={torrents} onChanged={onTorrentsChanged} onClose={onToggleTorrents} />
         )}
-      </div>
+      </button>
 
       <div className="flex items-center gap-2">
         <button
@@ -87,13 +79,24 @@ export function TopBar({
         </button>
 
         <button
-          onClick={onOpenAddTorrent}
-          className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[var(--accent-hover)]"
+          onClick={onOpenSearch}
+          title="Buscar en lo agregado"
+          className="flex items-center rounded-lg p-2 text-zinc-500 transition-colors hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
+        </button>
+
+        <button
+          onClick={onOpenAddSource}
+          title="Fuentes"
+          className="flex items-center rounded-lg bg-[var(--accent)] p-2 text-white transition-colors hover:bg-[var(--accent-hover)]"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="h-3.5 w-3.5">
             <path d="M12 5v14m-7-7h14" />
           </svg>
-          Agregar Torrent
         </button>
       </div>
     </header>

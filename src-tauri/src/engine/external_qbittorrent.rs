@@ -118,6 +118,11 @@ impl ExternalQbittorrent {
     /// falta recalcularlo desde `piece_range`). Se resta un `piece_size` de
     /// margen por si la última pieza contada todavía se está escribiendo a
     /// disco cuando se consulta.
+    // Producción consulta esto vía el trait `ReadyBytesProbe` (impl más
+    // abajo en este archivo, usado por stream_server.rs) - este wrapper
+    // directo solo lo llaman tests que ya tienen un ExternalQbittorrent
+    // concreto a mano.
+    #[cfg(test)]
     pub(crate) async fn ready_bytes(&self, id: &str, file_idx: usize) -> anyhow::Result<u64> {
         ready_bytes_via_client(&self.client, id, file_idx).await
     }

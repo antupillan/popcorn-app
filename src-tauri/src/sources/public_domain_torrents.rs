@@ -13,6 +13,7 @@ const RSS_URL: &str = "https://www.publicdomaintorrents.info/bt/rss.php";
 /// igual que uno roto (se descarta, no aborta el resto) — no configurable
 /// por el usuario, es resiliencia interna igual que `http_retry::MAX_ATTEMPTS`.
 const DETAIL_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+const DETAIL_FETCH_CONCURRENCY: usize = 8;
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct PublicDomainMovie {
@@ -106,10 +107,13 @@ pub async fn browse(client: &reqwest::Client) -> anyhow::Result<Vec<PublicDomain
         .await
         .context("RSS de publicdomaintorrents.info con formato inesperado")?;
 
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(DETAIL_FETCH_CONCURRENCY));
     let mut set = tokio::task::JoinSet::new();
     for (_, link) in parse_rss(&rss_body) {
         let client = client.clone();
+        let semaphore = semaphore.clone();
         set.spawn(async move {
+            let _permit = semaphore.acquire_owned().await.ok()?;
             let fetch = async {
                 let resp = crate::http_retry::send_with_retry(|| client.get(&link)).await.ok()?;
                 let html = resp.text().await.ok()?;
@@ -122,10 +126,18 @@ pub async fn browse(client: &reqwest::Client) -> anyhow::Result<Vec<PublicDomain
         });
     }
 
+    // El catálogo real repite el mismo link de descarga bajo más de un
+    // listado del RSS (visto en vivo: "Eyes_in_the_Night" duplicado) —
+    // dedupe por torrent_url, que es el identifier real de cada ítem
+    // (ver online_item_key en online_library.rs, que asume identifiers
+    // únicos por fuente).
+    let mut seen = std::collections::HashSet::new();
     let mut movies = Vec::new();
     while let Some(result) = set.join_next().await {
         if let Ok(Some(detail)) = result {
-            movies.push(PublicDomainMovie { title: detail.title, identifier: detail.torrent_url });
+            if seen.insert(detail.torrent_url.clone()) {
+                movies.push(PublicDomainMovie { title: detail.title, identifier: detail.torrent_url });
+            }
         }
     }
     Ok(movies)

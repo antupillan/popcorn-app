@@ -171,6 +171,29 @@ async fn stream_handler(
         eprintln!("[popcorn] stream_handler 404: torrent={torrent_id} no encontrado en la sesión");
         return (StatusCode::NOT_FOUND, "torrent not found").into_response();
     };
+
+    // handle.stream() falla si el torrent sigue en Initializing (metadata/
+    // piezas sin resolver todavía) — pasa seguido al pedir "Ver" apenas
+    // después de agregar. wait_until_initialized() espera a que salga de
+    // ese estado; el timeout acá es nuestro, la función de librqbit no
+    // tiene uno propio y quedaría esperando para siempre ante un magnet sin
+    // peers que den metadata.
+    match tokio::time::timeout(std::time::Duration::from_secs(15), handle.wait_until_initialized()).await {
+        Err(_elapsed) => {
+            eprintln!("[popcorn] stream_handler 503: torrent={torrent_id} sigue initializing tras 15s");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "el torrent todavía está resolviendo metadata, intenta de nuevo en unos segundos",
+            )
+                .into_response();
+        }
+        Ok(Err(e)) => {
+            eprintln!("[popcorn] stream_handler 404: torrent={torrent_id} error_initializing={e}");
+            return (StatusCode::NOT_FOUND, e.to_string()).into_response();
+        }
+        Ok(Ok(())) => {}
+    }
+
     // handle.stream() abajo consume el Arc (toma self por valor, no &self)
     // — el nombre hay que sacarlo antes de perder acceso a handle.
     let content_type = guess_content_type(handle.name().as_deref());

@@ -1,9 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import type { View } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
-import { AddTorrentModal } from "./components/AddTorrentModal";
+import { AddSourceModal } from "./components/AddSourceModal";
+import type { SourceGroup } from "./components/AddSourceModal";
+import { SearchModal } from "./components/SearchModal";
+import { TorrentsFlyout } from "./components/TorrentsFlyout";
+import { SubtitulosView } from "./components/SubtitulosView";
 import { Biblioteca } from "./components/Biblioteca";
+import type { BibliotecaTab } from "./components/Biblioteca";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { FirstRunScreen } from "./components/FirstRunScreen";
 import { SeedRatioDialog } from "./components/SeedRatioDialog";
@@ -21,7 +26,8 @@ type Playing =
   | { kind: "channel"; title: string; url: string; sourceId: string | null }
   | { kind: "local"; path: string; name: string }
   | { kind: "online"; title: string; url: string }
-  | { kind: "recording"; id: string; name: string; durationSeconds: number };
+  | { kind: "recording"; id: string; name: string; durationSeconds: number }
+  | { kind: "youtube"; videoId: string; title: string };
 
 const FIRST_RUN_KEY = "popcorn.acceptedFirstRun";
 const THEME_KEY = "popcorn.theme";
@@ -62,7 +68,9 @@ function App() {
     () => (localStorage.getItem(TITLEBAR_ORDER_KEY) as TitleBarOrder | null) ?? "minimizeFirst",
   );
   const [view, setView] = useState<View>("biblioteca");
-  const [modalOpen, setModalOpen] = useState(false);
+  const [bibliotecaTab, setBibliotecaTab] = useState<BibliotecaTab>("online");
+  const [addSourceModal, setAddSourceModal] = useState<SourceGroup | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [ajustesOpen, setAjustesOpen] = useState(false);
   const [torrentsOpen, setTorrentsOpen] = useState(false);
   const [playing, setPlaying] = useState<Playing | null>(null);
@@ -131,6 +139,31 @@ function App() {
     refreshMedia();
   }
 
+  // Extraídos como funciones nombradas (antes closures inline pasadas
+  // solo a <Biblioteca>) para reusarlas también desde <SearchModal> sin
+  // duplicar los literales.
+  function playMedia(item: MediaItem) {
+    setPlaying({ kind: "media", item });
+  }
+  function playChannel(channel: { title: string; url: string; sourceId: string | null }) {
+    setPlaying({ kind: "channel", ...channel });
+  }
+  function playYoutube(video: { videoId: string; title: string }) {
+    setPlaying({ kind: "youtube", ...video });
+  }
+  function playOnline(title: string, url: string) {
+    setPlaying({ kind: "online", title, url });
+  }
+
+  // Sin esto, cambiar de pestaña con el scroll bajado deja <main> con un
+  // scrollTop mayor a la altura de la pestaña nueva (si es más corta) —
+  // se ve todo en blanco, incluida la cinta de pestañas sticky, hasta
+  // volver a scrollear manualmente (bug reportado en vivo).
+  const mainRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0 });
+  }, [view, bibliotecaTab]);
+
   // Aviso único al llegar a 1:1 en un torrent sembrado automáticamente (ver
   // plan de sembrado automático) — un diálogo a la vez, marca en
   // localStorage para no repetir por ese id.
@@ -192,33 +225,64 @@ function App() {
             downloadSpeedMbps={totalDown}
             uploadSpeedMbps={totalUp}
             torrents={torrents}
-            torrentsOpen={torrentsOpen}
             onToggleTorrents={() => setTorrentsOpen((o) => !o)}
-            onTorrentsChanged={refreshTorrents}
             theme={theme}
             onCycleTheme={cycleTheme}
-            onOpenAddTorrent={() => setModalOpen(true)}
+            onOpenAddSource={() =>
+              setAddSourceModal(
+                bibliotecaTab === "iptv" ? "iptv" : bibliotecaTab === "youtube" ? "youtube" : "torrent",
+              )
+            }
+            onOpenSearch={() => setSearchOpen(true)}
           />
 
-          <main className="flex-1 overflow-y-auto">
+          <main ref={mainRef} className="flex-1 overflow-y-auto">
             {view === "biblioteca" && (
               <Biblioteca
+                activeTab={bibliotecaTab}
+                onTabChange={setBibliotecaTab}
                 mediaItems={mediaItems}
-                onPlayMedia={(item) => setPlaying({ kind: "media", item })}
-                onPlayChannel={(channel) => setPlaying({ kind: "channel", ...channel })}
+                onPlayMedia={playMedia}
+                onPlayChannel={playChannel}
                 onPlayLocal={(file) => setPlaying({ kind: "local", path: file.path, name: file.name })}
-                onPlayOnline={(title, url) => setPlaying({ kind: "online", title, url })}
+                onPlayOnline={playOnline}
                 onPlayRecording={(recording) => setPlaying({ kind: "recording", ...recording })}
+                onPlayYoutube={playYoutube}
                 onMediaAdded={refreshMedia}
                 onMediaRemoved={refreshMedia}
               />
             )}
+            {view === "subtitulos" && <SubtitulosView />}
           </main>
         </div>
       </div>
 
-      {modalOpen && (
-        <AddTorrentModal onClose={() => setModalOpen(false)} onAdded={handleAdded} />
+      {searchOpen && (
+        <SearchModal
+          onClose={() => setSearchOpen(false)}
+          onPlayMedia={playMedia}
+          onPlayChannel={playChannel}
+          onPlayYoutube={playYoutube}
+          onPlayOnline={playOnline}
+          onMediaAdded={refreshMedia}
+        />
+      )}
+      {torrentsOpen && (
+        <TorrentsFlyout
+          torrents={torrents}
+          onChanged={refreshTorrents}
+          onClose={() => setTorrentsOpen(false)}
+          mediaItems={mediaItems}
+          onPlayMedia={playMedia}
+        />
+      )}
+
+      {addSourceModal && (
+        <AddSourceModal
+          initialGroup={addSourceModal}
+          onClose={() => setAddSourceModal(null)}
+          onTorrentAdded={handleAdded}
+        />
       )}
       {playing?.kind === "media" && (
         <VideoPlayer kind="media" item={playing.item} onClose={() => setPlaying(null)} />
@@ -246,6 +310,9 @@ function App() {
           durationSeconds={playing.durationSeconds}
           onClose={() => setPlaying(null)}
         />
+      )}
+      {playing?.kind === "youtube" && (
+        <VideoPlayer kind="youtube" videoId={playing.videoId} title={playing.title} onClose={() => setPlaying(null)} />
       )}
       {seedRatioTorrent && (
         <SeedRatioDialog

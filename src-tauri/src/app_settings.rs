@@ -15,6 +15,7 @@ const QBITTORRENT_USERNAME_KEY: &str = "qbittorrent_username";
 /// los proveedores de IA que sí admiten varios guardados en simultáneo.
 const QBITTORRENT_SECRET_ID: &str = "qbittorrent";
 const DEFAULT_ENGINE_KIND: &str = "embedded";
+pub(crate) const TORRENT_PROXY_SECRET_ID: &str = "torrent_socks_proxy_url";
 
 #[derive(Serialize, Clone)]
 pub struct SpeedLimits {
@@ -210,6 +211,23 @@ pub async fn test_torrent_engine(base_url: String, username: String, password: S
         .await
         .map_err(|e| format!("autenticó pero falló al listar torrents: {e}"))?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn set_torrent_proxy_url(url: String) -> Result<(), String> {
+    crate::keychain::set_secret(TORRENT_PROXY_SECRET_ID, &url).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_torrent_proxy_status() -> Result<bool, String> {
+    Ok(crate::keychain::get_secret(TORRENT_PROXY_SECRET_ID)
+        .map_err(|e| e.to_string())?
+        .is_some())
+}
+
+#[tauri::command]
+pub async fn remove_torrent_proxy_url() -> Result<(), String> {
+    crate::keychain::delete_secret(TORRENT_PROXY_SECRET_ID).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

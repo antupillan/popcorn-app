@@ -24,7 +24,7 @@ pub struct StructuredQuery {
 /// y fusionar con resultados de otras sesiones sin perder coherencia de
 /// orden (ver `ai::curation::curate_by_hint` y el caché de curación en el
 /// plan). Candidatos no incluidos simplemente no aparecen en el `Vec`.
-#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ScoredCandidate {
     pub index: usize,
     pub score: i32,
@@ -67,6 +67,20 @@ pub trait AiProvider: Send + Sync {
         candidates: &[String],
         hint: Option<&str>,
     ) -> anyhow::Result<Vec<ScoredCandidate>>;
+    /// Traduce cada línea de `texts` a `target_lang`, preservando cantidad y
+    /// orden exacto (`texts.len() == resultado.len()`, misma posición) — ver
+    /// `TRANSLATE_SYSTEM_PROMPT`. Crítico para subtítulos: cada línea es una
+    /// cue con su propio timestamp ya fijado en el frontend (`src/lib/srt.ts`),
+    /// fusionar o partir líneas rompería esa correspondencia en silencio.
+    async fn translate(&self, texts: &[String], target_lang: &str) -> anyhow::Result<Vec<String>>;
+    /// Devuelve 2-5 términos de búsqueda alternativos/más amplios para
+    /// `query` (sinónimos, título en otro idioma, romanización) — a
+    /// diferencia de `parse_query` (extractor estricto, nunca amplía),
+    /// esto es para ampliar el alcance de una búsqueda de indexers, ver
+    /// `BROADEN_QUERY_SYSTEM_PROMPT`. El caller siempre suma la query
+    /// original al set de búsqueda además de lo que devuelva acá — nunca
+    /// depende 100% del resultado de la IA.
+    async fn broaden_query(&self, query: &str) -> anyhow::Result<Vec<String>>;
 }
 
 /// Prompt fijo por la app (no editable por el usuario ni por config) —
@@ -161,6 +175,43 @@ pub(crate) fn build_hint_curation_user_text(candidates: &[String], hint: Option<
     }
 }
 
+/// Prompt fijo para traducción de subtítulos (Mandato 8) — el requisito no
+/// negociable es preservar la cantidad y el orden de líneas exactos, porque
+/// cada línea ya tiene un timestamp fijado del lado del cliente
+/// (`src/lib/srt.ts`) antes de llegar acá: fusionar o partir una línea
+/// desalinearía esa cue del resto sin que nada lo detecte. Pide un objeto
+/// (no un array top-level) por el mismo motivo que `CURATE_RESULTS_SYSTEM_PROMPT`
+/// — el modo JSON forzado de la API real de OpenAI exige un objeto.
+pub(crate) const TRANSLATE_SYSTEM_PROMPT: &str = "Sos un traductor de líneas de subtítulos. \
+Se te da un idioma destino y una lista numerada de líneas de texto (cada una es una línea de subtítulo independiente, con su propio timestamp que vos no ves). \
+Devolvé ÚNICAMENTE un objeto JSON con esta forma exacta, sin texto adicional: {\"lines\": [string, ...]}. \
+`lines` tiene que tener EXACTAMENTE la misma cantidad de elementos que la lista de entrada, en el mismo orden — un elemento de salida por cada línea de entrada, nunca fusiones dos líneas en una ni partas una línea en dos, incluso si eso te parece más natural en el idioma destino. \
+Si una línea está vacía o no tiene texto traducible (ej. solo son puntos suspensivos o música entre corchetes), devolvé esa línea igual (traducida si aplica, o intacta) — nunca la omitas, el conteo tiene que cerrar siempre. \
+Nunca agregues texto, explicación ni markdown fuera del objeto JSON.";
+
+/// Prompt fijo para ampliar una búsqueda de indexers (Mandato 8) — a
+/// propósito NO es lo mismo que `PARSE_QUERY_SYSTEM_PROMPT` (ese extrae,
+/// nunca amplía). Igual que los demás prompts fijos, nunca sugiere sitios
+/// ni indexers — solo términos de búsqueda alternativos para el mismo
+/// contenido.
+pub(crate) const BROADEN_QUERY_SYSTEM_PROMPT: &str = "Sos un asistente que amplía búsquedas de video (películas, series, anime, documentales) para maximizar la chance de encontrar resultados en índices de torrents. \
+Dada una búsqueda del usuario, devolvé ÚNICAMENTE un objeto JSON con esta forma exacta, sin texto adicional: {\"terms\": [string, ...]}. \
+`terms` tiene entre 2 y 5 términos de búsqueda alternativos para el mismo contenido — título en otro idioma (inglés, español, japonés, chino, según corresponda), romanización, o sinónimo/forma alternativa del título. \
+Nunca incluyas URLs, nombres de sitios web, nombres de indexers, tags de calidad/formato, ni explicaciones — cada elemento de `terms` es solo texto de búsqueda, listo para usarse tal cual. \
+Nunca agregues texto, explicación ni markdown fuera del objeto JSON.";
+
+/// Arma el texto de usuario para `translate`: idioma destino + lista
+/// numerada de líneas, mismo formato para cualquier proveedor.
+pub(crate) fn build_translate_user_text(texts: &[String], target_lang: &str) -> String {
+    let list = texts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("{i}: {t}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("Idioma destino: {target_lang}\n\nLíneas:\n{list}")
+}
+
 #[derive(Deserialize)]
 struct IndexListResponse {
     indices: Vec<usize>,
@@ -206,6 +257,50 @@ pub(crate) fn extract_scored_list(raw: &str) -> anyhow::Result<Vec<ScoredCandida
     let parsed: ScoredItemsResponse = serde_json::from_str(candidate)
         .map_err(|e| anyhow::anyhow!("no se pudo parsear la respuesta del proveedor como {{items: [...]}}: {e}"))?;
     Ok(parsed.items)
+}
+
+#[derive(Deserialize)]
+struct TranslatedLinesResponse {
+    lines: Vec<String>,
+}
+
+/// Análogo a `extract_index_list`/`extract_scored_list` para el contrato de
+/// `translate` (`{"lines": [...]}`). No valida acá que la cantidad coincida
+/// con la entrada — eso lo hace el caller (`translate` en cada provider),
+/// que sí tiene la entrada original a mano para comparar.
+pub(crate) fn extract_translated_lines(raw: &str) -> anyhow::Result<Vec<String>> {
+    let start = raw
+        .find('{')
+        .ok_or_else(|| anyhow::anyhow!("la respuesta del proveedor no contiene un objeto JSON"))?;
+    let end = raw
+        .rfind('}')
+        .ok_or_else(|| anyhow::anyhow!("la respuesta del proveedor no contiene un objeto JSON"))?;
+    anyhow::ensure!(end >= start, "delimitadores de JSON inválidos en la respuesta");
+    let candidate = &raw[start..=end];
+    let parsed: TranslatedLinesResponse = serde_json::from_str(candidate)
+        .map_err(|e| anyhow::anyhow!("no se pudo parsear la respuesta del proveedor como {{lines: [...]}}: {e}"))?;
+    Ok(parsed.lines)
+}
+
+#[derive(Deserialize)]
+struct BroadenedTermsResponse {
+    terms: Vec<String>,
+}
+
+/// Análogo a `extract_index_list`/`extract_translated_lines` para el
+/// contrato de `broaden_query` (`{"terms": [...]}`).
+pub(crate) fn extract_broadened_terms(raw: &str) -> anyhow::Result<Vec<String>> {
+    let start = raw
+        .find('{')
+        .ok_or_else(|| anyhow::anyhow!("la respuesta del proveedor no contiene un objeto JSON"))?;
+    let end = raw
+        .rfind('}')
+        .ok_or_else(|| anyhow::anyhow!("la respuesta del proveedor no contiene un objeto JSON"))?;
+    anyhow::ensure!(end >= start, "delimitadores de JSON inválidos en la respuesta");
+    let candidate = &raw[start..=end];
+    let parsed: BroadenedTermsResponse = serde_json::from_str(candidate)
+        .map_err(|e| anyhow::anyhow!("no se pudo parsear la respuesta del proveedor como {{terms: [...]}}: {e}"))?;
+    Ok(parsed.terms)
 }
 
 /// Intenta extraer el primer bloque `{...}` de un texto (algunos proveedores
@@ -312,5 +407,57 @@ mod tests {
     #[test]
     fn extract_scored_list_rejects_object_without_items_field() {
         assert!(extract_scored_list(r#"{"indices": [1, 2]}"#).is_err());
+    }
+
+    #[test]
+    fn extract_translated_lines_parses_bare_json() {
+        let raw = r#"{"lines": ["Hola", "Chau"]}"#;
+        assert_eq!(extract_translated_lines(raw).unwrap(), vec!["Hola".to_string(), "Chau".to_string()]);
+    }
+
+    #[test]
+    fn extract_translated_lines_strips_markdown_fence() {
+        let raw = "```json\n{\"lines\": [\"Hola\"]}\n```";
+        assert_eq!(extract_translated_lines(raw).unwrap(), vec!["Hola".to_string()]);
+    }
+
+    #[test]
+    fn extract_translated_lines_rejects_response_without_object() {
+        assert!(extract_translated_lines("no hay ningún objeto acá").is_err());
+    }
+
+    #[test]
+    fn extract_translated_lines_rejects_object_without_lines_field() {
+        assert!(extract_translated_lines(r#"{"items": []}"#).is_err());
+    }
+
+    #[test]
+    fn extract_broadened_terms_parses_bare_json() {
+        let raw = r#"{"terms": ["ワンピース", "One Piece"]}"#;
+        assert_eq!(extract_broadened_terms(raw).unwrap(), vec!["ワンピース".to_string(), "One Piece".to_string()]);
+    }
+
+    #[test]
+    fn extract_broadened_terms_strips_markdown_fence() {
+        let raw = "```json\n{\"terms\": [\"One Piece\"]}\n```";
+        assert_eq!(extract_broadened_terms(raw).unwrap(), vec!["One Piece".to_string()]);
+    }
+
+    #[test]
+    fn extract_broadened_terms_rejects_response_without_object() {
+        assert!(extract_broadened_terms("no hay ningún objeto acá").is_err());
+    }
+
+    #[test]
+    fn extract_broadened_terms_rejects_object_without_terms_field() {
+        assert!(extract_broadened_terms(r#"{"lines": []}"#).is_err());
+    }
+
+    #[test]
+    fn build_translate_user_text_numbers_lines_and_includes_target_lang() {
+        let text = build_translate_user_text(&["Hola".to_string(), "Mundo".to_string()], "en");
+        assert!(text.contains("Idioma destino: en"));
+        assert!(text.contains("0: Hola"));
+        assert!(text.contains("1: Mundo"));
     }
 }

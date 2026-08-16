@@ -469,6 +469,12 @@ mod tests {
                 .map(|i| crate::ai::ScoredCandidate { index: i, score: 50 })
                 .collect())
         }
+        async fn translate(&self, _texts: &[String], _target_lang: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
+        async fn broaden_query(&self, _query: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rusqlite::OptionalExtension;
 use serde::Serialize;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::ai::{commands::try_build_active_provider, curation, StructuredQuery};
 use crate::db::Db;
@@ -12,6 +12,40 @@ use crate::sources::public_domain_torrents;
 
 pub struct EngineState(pub Arc<dyn TorrentEngine>);
 pub struct HttpClient(pub reqwest::Client);
+
+const CATALOG_PROXY_SECRET_ID: &str = "catalog_http_proxy_url";
+
+pub(crate) fn build_http_client() -> reqwest::Client {
+    let proxy_url = crate::keychain::get_secret(CATALOG_PROXY_SECRET_ID).ok().flatten();
+    let mut builder = reqwest::Client::builder();
+    if let Some(url) = proxy_url {
+        match reqwest::Proxy::all(&url) {
+            Ok(proxy) => {
+                let no_proxy = reqwest::NoProxy::from_string("localhost,127.0.0.1,::1");
+                builder = builder.proxy(proxy.no_proxy(no_proxy));
+            }
+            Err(e) => eprintln!("[popcorn] catalog_http_proxy_url inválida ({e}), ignorada"),
+        }
+    }
+    builder.build().unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn set_catalog_proxy_url(url: String) -> Result<(), String> {
+    crate::keychain::set_secret(CATALOG_PROXY_SECRET_ID, &url).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_catalog_proxy_status() -> Result<bool, String> {
+    Ok(crate::keychain::get_secret(CATALOG_PROXY_SECRET_ID)
+        .map_err(|e| e.to_string())?
+        .is_some())
+}
+
+#[tauri::command]
+pub async fn remove_catalog_proxy_url() -> Result<(), String> {
+    crate::keychain::delete_secret(CATALOG_PROXY_SECRET_ID).map_err(|e| e.to_string())
+}
 
 /// `Some(mensaje)` cuando `lib.rs::setup` no pudo conectar al motor externo
 /// configurado y cayó a `EmbeddedRqbit` — el frontend lo consulta una vez al
@@ -248,20 +282,43 @@ async fn resolve_media_item_stream_url(
     media_id: &str,
     file_idx: usize,
 ) -> Result<String, String> {
-    let (source_type, source_identifier, engine_torrent_id): (String, String, Option<String>) = {
+    let (source_type, source_identifier, engine_torrent_id, stored_primary_file_idx): (
+        String,
+        String,
+        Option<String>,
+        Option<i64>,
+    ) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         conn.query_row(
-            "SELECT source_type, source_identifier, engine_torrent_id FROM media_items WHERE id = ?1",
+            "SELECT source_type, source_identifier, engine_torrent_id, primary_file_idx FROM media_items WHERE id = ?1",
             [media_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .map_err(|e| e.to_string())?
     };
 
-    let resolved_id = match engine_torrent_id {
-        Some(id) if engine.exists(&id).await => id,
+    let (resolved_id, healed_primary_file_idx) = match engine_torrent_id {
+        Some(id) if engine.exists(&id).await => (id, None),
         _ => heal_media_item(http, engine, db, media_id, &source_type, &source_identifier).await?,
     };
+
+    // Sobreescribe el file_idx que mande el frontend (siempre 0 hoy) cuando
+    // ya sabemos cuál es el índice real del video — bug real reportado en
+    // vivo: un torrent de archive.org trae, además del/los video(s),
+    // transcripts/subtítulos/miniaturas/metadata como archivos propios, y
+    // file_idx=0 podía caer en cualquiera de esos (visto en vivo: un
+    // .asr.js de 135KB). `healed_primary_file_idx` (recién calculado si esta
+    // llamada tuvo que sanar) tiene prioridad sobre `stored_primary_file_idx`
+    // (leído de la DB ANTES de sanar, por lo tanto stale en la primera
+    // sanación tras cada reinicio — bug real encontrado en vivo: sin esto,
+    // la primera reproducción de cada sesión seguía usando file_idx=0 pese a
+    // que `heal_media_item` ya había calculado y persistido el valor
+    // correcto un instante antes, dentro de la misma llamada). Si ninguno
+    // está disponible, sigue el file_idx recibido — no rompe lo que ya
+    // andaba con file_idx=0 real.
+    let file_idx = healed_primary_file_idx
+        .or(stored_primary_file_idx.map(|i| i as usize))
+        .unwrap_or(file_idx);
 
     // WebKitGTK no reproduce Matroska nativo vía <video src> (confirmado
     // en vivo: MEDIA_ERR_SRC_NOT_SUPPORTED pese a que el sistema decodifica
@@ -320,6 +377,14 @@ async fn resolve_remuxed_stream_url(
     engine.local_stream_url(cached).await.map_err(|e| e.to_string())
 }
 
+/// Ventana máxima (intentos x intervalo = 2s) para dejar que la
+/// verificación de piezas en background de `add_seeding_from_disk` confirme
+/// `finished` antes de decidir si hace falta el fallback HTTP de archive.org
+/// al sanar — ver comentario en `heal_media_item`. Puramente I/O local, no
+/// depende de latencia de red externa.
+const HEAL_FINISHED_RECHECK_ATTEMPTS: u32 = 10;
+const HEAL_FINISHED_RECHECK_INTERVAL_MS: u64 = 200;
+
 /// Re-agrega un ítem al motor a partir de su `source_type`/`source_identifier`
 /// guardados en `media_items` y persiste el `engine_torrent_id` nuevo.
 async fn heal_media_item(
@@ -329,12 +394,16 @@ async fn heal_media_item(
     media_id: &str,
     source_type: &str,
     source_identifier: &str,
-) -> Result<String, String> {
+) -> Result<(String, Option<usize>), String> {
+    let mut primary_file_idx: Option<usize> = None;
     let new_id = match source_type {
         "archive_org" => {
-            let bytes = archive_org::fetch_torrent_bytes(http, source_identifier)
+            let bytes = archive_org::fetch_torrent_bytes_cached(http, source_identifier, engine.downloads_dir())
                 .await
                 .map_err(|e| e.to_string())?;
+            primary_file_idx = archive_org::resolve_torrent_files(&bytes)
+                .ok()
+                .and_then(|files| archive_org::resolve_primary_file_idx(&files, source_identifier));
             // add_seeding_from_disk, no add() plano — mismo motivo que
             // add_archive_org_item_core: si ya se sembró antes, add() sin
             // overwrite falla contra los archivos ya completos en disco.
@@ -342,13 +411,52 @@ async fn heal_media_item(
                 .add_seeding_from_disk(AddTorrentSource::TorrentBytes(bytes), None)
                 .await
                 .map_err(|e| e.to_string())?;
-            // No fatal si esto falla — igual que en add_archive_org_item, el
-            // torrent re-agregado puede completar por P2P sin el fallback.
-            if let Ok(url) = archive_org::primary_video_file(http, source_identifier).await {
-                engine
-                    .register_http_fallback(&info.id, url)
+            // Revertido (bug real encontrado en vivo, más grave que el que
+            // esto intentaba arreglar): sacar el registro del fallback acá
+            // asumía "sanar implica que ya estaba completo antes" — falso
+            // para ítems agregados por el flujo regular (add_archive_org_
+            // item_core, sin sembrado automático dedicado), que dependen
+            // POR COMPLETO del fallback HTTP para reproducirse — archive.org
+            // casi nunca tiene peers P2P reales para contenido de dominio
+            // público. Sin el fallback, esos ítems (la mayoría de Mi
+            // Colección) quedaban sirviendo el archivo local a medio
+            // descargar (verificado en vivo: 0 bytes reales en un .mp4
+            // de 117MB) en vez del proxy que sí funcionaba. `stream_url`
+            // (embedded_rqbit.rs) ya decide solo, por `finished`, cuándo
+            // preferir local sobre el fallback — no hace falta forzarlo acá.
+            //
+            // Pero registrar el fallback significa red (primary_video_file
+            // pega a archive.org) — innecesaria si el archivo YA está
+            // completo en disco, caso real y común en Mi Colección (bug
+            // reportado en vivo: reproducir un ítem 100% local y ya
+            // sembrado seguía generando tráfico/errores contra archive.org
+            // en cada sanación tras cada reinicio). `add_seeding_from_disk`
+            // no verifica piezas de forma síncrona — corre en background
+            // dentro de la sesión de librqbit, así que `info.finished` recién
+            // devuelto puede ser `false` por un instante aunque el archivo
+            // ya sea válido. Sondeo acotado, solo I/O local (nunca red): si
+            // la verificación no cierra en esa ventana, se asume incompleto
+            // y sí vale la pena el fallback.
+            let mut finished = info.finished;
+            for _ in 0..HEAL_FINISHED_RECHECK_ATTEMPTS {
+                if finished {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(HEAL_FINISHED_RECHECK_INTERVAL_MS)).await;
+                finished = engine
+                    .list()
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .any(|t| t.id == info.id && t.finished);
+            }
+            if !finished {
+                if let Ok(url) = archive_org::primary_video_file(http, source_identifier).await {
+                    engine
+                        .register_http_fallback(&info.id, url)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
             }
             info.id
         }
@@ -393,13 +501,15 @@ async fn heal_media_item(
     };
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
+    // COALESCE: si esta sanación no pudo resolver el índice (ej. .torrent
+    // sin parsear), no pisa un valor ya bueno de una sanación anterior.
     conn.execute(
-        "UPDATE media_items SET engine_torrent_id = ?1 WHERE id = ?2",
-        (&new_id, media_id),
+        "UPDATE media_items SET engine_torrent_id = ?1, primary_file_idx = COALESCE(?2, primary_file_idx) WHERE id = ?3",
+        (&new_id, primary_file_idx.map(|i| i as i64), media_id),
     )
     .map_err(|e| e.to_string())?;
 
-    Ok(new_id)
+    Ok((new_id, primary_file_idx))
 }
 
 #[tauri::command]
@@ -463,9 +573,18 @@ pub(crate) async fn add_archive_org_item_core(
     year: Option<i64>,
     licenseurl: Option<String>,
 ) -> Result<TorrentInfo, String> {
-    let bytes = archive_org::fetch_torrent_bytes(http, identifier)
+    let bytes = archive_org::fetch_torrent_bytes_cached(http, identifier, engine.downloads_dir())
         .await
         .map_err(|e| e.to_string())?;
+
+    // Calculado antes de mover `bytes` al motor — bug real reportado en
+    // vivo: el reproductor asumía file_idx=0 como "el video", pero un
+    // torrent de archive.org trae también transcripts/subtítulos/
+    // miniaturas/metadata como archivos propios (ver
+    // archive_org::resolve_primary_file_idx).
+    let primary_file_idx = archive_org::resolve_torrent_files(&bytes)
+        .ok()
+        .and_then(|files| archive_org::resolve_primary_file_idx(&files, identifier));
 
     // add_seeding_from_disk (overwrite:true), no add() plano — error real
     // encontrado en vivo: si este identifier ya se sembró antes (archivos
@@ -494,9 +613,17 @@ pub(crate) async fn add_archive_org_item_core(
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO media_items \
-             (id, source_type, source_identifier, title, year, license, engine_torrent_id) \
-             VALUES (?1, 'archive_org', ?2, ?3, ?4, ?5, ?6)",
-            (&media_id, identifier, title, year, licenseurl, &info.id),
+             (id, source_type, source_identifier, title, year, license, engine_torrent_id, primary_file_idx) \
+             VALUES (?1, 'archive_org', ?2, ?3, ?4, ?5, ?6, ?7)",
+            (
+                &media_id,
+                identifier,
+                title,
+                year,
+                licenseurl,
+                &info.id,
+                primary_file_idx.map(|i| i as i64),
+            ),
         )
         .map_err(|e| e.to_string())?;
     }
@@ -506,6 +633,7 @@ pub(crate) async fn add_archive_org_item_core(
 
 #[tauri::command]
 pub async fn add_archive_org_item(
+    app: tauri::AppHandle,
     http: State<'_, HttpClient>,
     engine: State<'_, EngineState>,
     db: State<'_, Db>,
@@ -514,7 +642,32 @@ pub async fn add_archive_org_item(
     year: Option<i64>,
     licenseurl: Option<String>,
 ) -> Result<TorrentInfo, String> {
-    add_archive_org_item_core(&http.0, &engine.0, &db, &identifier, &title, year, licenseurl).await
+    let info = add_archive_org_item_core(&http.0, &engine.0, &db, &identifier, &title, year, licenseurl.clone()).await?;
+
+    // Mismo sembrado automático en background que ya usa add_online_item
+    // (online_library.rs) — bug real reportado en vivo: este comando
+    // ("+/Buscar", SearchModal tab "Torrents") nunca lo disparaba, así
+    // que un ítem agregado por acá quedaba dependiendo del proxy HTTP
+    // para siempre en vez de terminar 100% local. No bloquea la
+    // respuesta ni la reproducción, que ya está resuelta vía proxy.
+    {
+        let task_app = app.clone();
+        let task_identifier = identifier.clone();
+        let task_title = title.clone();
+        tokio::spawn(async move {
+            let http = task_app.state::<HttpClient>();
+            let engine = task_app.state::<EngineState>();
+            let db = task_app.state::<Db>();
+            if let Err(e) =
+                seed_archive_org_item_core(&http.0, &engine.0, &db, &task_identifier, &task_title, year, licenseurl)
+                    .await
+            {
+                eprintln!("[popcorn] sembrado automático en background falló para '{task_identifier}': {e}");
+            }
+        });
+    }
+
+    Ok(info)
 }
 
 /// Sembrado real (ver plan): descarga por HTTP **todos** los archivos
@@ -542,11 +695,12 @@ pub(crate) async fn seed_archive_org_item_core(
         .ok_or_else(|| "el motor activo no soporta sembrado real (requiere EmbeddedRqbit)".to_string())?
         .to_path_buf();
 
-    let torrent_bytes = archive_org::fetch_torrent_bytes(http, identifier)
+    let torrent_bytes = archive_org::fetch_torrent_bytes_cached(http, identifier, Some(&downloads_dir))
         .await
         .map_err(|e| e.to_string())?;
 
     let files = archive_org::resolve_torrent_files(&torrent_bytes).map_err(|e| e.to_string())?;
+    let primary_file_idx = archive_org::resolve_primary_file_idx(&files, identifier);
 
     // Streaming a disco en vez de cargar cada respuesta entera en memoria —
     // son películas, no los KB de un .torrent. Secuencial, no en paralelo:
@@ -595,10 +749,14 @@ pub(crate) async fn seed_archive_org_item_core(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Saltea el insert si ya existe una fila para este identifier — pasa
-    // cuando el sembrado se dispara automático después de "Ver"
-    // (add_archive_org_item_core ya insertó la suya, ver
-    // online_library::add_online_item_inner).
+    // Si ya existe una fila para este identifier (caso común: el sembrado
+    // se dispara automático en background después de agregar rápido, ver
+    // add_archive_org_item/add_online_item_inner), actualiza su
+    // engine_torrent_id y primary_file_idx al resultado de ESTA descarga
+    // real — bug real reportado en vivo: antes se saltaba en silencio, la
+    // descarga real pasaba pero nada quedaba apuntando a ella, así que el
+    // ítem seguía dependiendo del proxy/P2P para siempre pese al trabajo
+    // ya hecho acá.
     {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let already_exists: bool = conn
@@ -610,13 +768,19 @@ pub(crate) async fn seed_archive_org_item_core(
             .optional()
             .map_err(|e| e.to_string())?
             .unwrap_or(false);
-        if !already_exists {
+        if already_exists {
+            conn.execute(
+                "UPDATE media_items SET engine_torrent_id = ?1, primary_file_idx = ?2 WHERE source_identifier = ?3",
+                (&info.id, primary_file_idx.map(|i| i as i64), identifier),
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
             let media_id = uuid::Uuid::new_v4().to_string();
             conn.execute(
                 "INSERT INTO media_items \
-                 (id, source_type, source_identifier, title, year, license, engine_torrent_id) \
-                 VALUES (?1, 'archive_org', ?2, ?3, ?4, ?5, ?6)",
-                (&media_id, identifier, title, year, licenseurl, &info.id),
+                 (id, source_type, source_identifier, title, year, license, engine_torrent_id, primary_file_idx) \
+                 VALUES (?1, 'archive_org', ?2, ?3, ?4, ?5, ?6, ?7)",
+                (&media_id, identifier, title, year, licenseurl, &info.id, primary_file_idx.map(|i| i as i64)),
             )
             .map_err(|e| e.to_string())?;
         }
@@ -957,5 +1121,65 @@ mod seed_tests {
             "el archivo ya estaba completo en disco antes de agregar — debe reconocerse 100% sembrado \
              una vez terminado el chequeo (estado final: {last_state})"
         );
+    }
+
+    /// Test pedido explícito por el usuario ante la duda de que el bug de
+    /// reproducción fuera distinto a "archive.org está lento" — aísla el
+    /// camino nativo de streaming (`/stream/`, sin `/proxy/`) para un
+    /// archivo YA completo en disco, end-to-end: sembrar, confirmar
+    /// `finished`, pedir `stream_url` (debe resolver `/stream/`, no
+    /// `/proxy/`, gracias al fix del punto 4 de
+    /// `resiliencia_streaming_archive_org.txt`) y efectivamente traer
+    /// bytes reales con un request `Range` como haría un `<video>` real.
+    /// Si esto falla, el bug está en nuestro servidor de streaming, no en
+    /// archive.org — exactamente la distinción que pidió el usuario.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "red real, descarga ~45MB, no apto para CI por defecto"]
+    async fn stream_url_serves_real_bytes_for_an_already_finished_seeded_torrent() {
+        let db = migrated_db();
+        let tmp = std::env::temp_dir().join(format!("popcorn-seed-stream-e2e-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let embedded = crate::engine::embedded_rqbit::EmbeddedRqbit::new_standalone(tmp).await.unwrap();
+        let engine: Arc<dyn TorrentEngine> = Arc::new(embedded);
+        let http = reqwest::Client::new();
+
+        let info = seed_archive_org_item_core(&http, &engine, &db, "cosmos-laundromat", "Cosmos Laundromat", None, None)
+            .await
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut finished = false;
+        while std::time::Instant::now() < deadline {
+            let list = engine.list().await.unwrap();
+            let Some(current) = list.into_iter().find(|t| t.id == info.id) else {
+                panic!("el torrent desapareció de la lista mientras se esperaba el chequeo");
+            };
+            if current.finished {
+                finished = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+        assert!(finished, "el chequeo de piezas no terminó a tiempo — no se puede probar streaming sin esto");
+
+        let url = engine.stream_url(&info.id, 0).await.expect("stream_url debe resolver para un torrent finished");
+        assert!(
+            url.contains("/stream/"),
+            "un torrent finished debe servir local (/stream/), nunca por /proxy/ — url real: {url}"
+        );
+
+        let resp = http
+            .get(&url)
+            .header("Range", "bytes=0-1048575")
+            .send()
+            .await
+            .expect("request Range a /stream/ para un archivo ya completo");
+        assert!(
+            resp.status().is_success(),
+            "esperaba 200/206 sirviendo bytes reales de un archivo ya completo, recibí {}",
+            resp.status()
+        );
+        let bytes = resp.bytes().await.expect("leer el cuerpo de la respuesta");
+        assert!(!bytes.is_empty(), "la respuesta no debe venir vacía para un archivo ya completo en disco");
     }
 }

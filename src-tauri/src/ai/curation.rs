@@ -240,6 +240,12 @@ mod tests {
         ) -> anyhow::Result<Vec<ScoredCandidate>> {
             unreachable!("no lo usa curate<T>, ver ScoredHintProvider para curate_by_hint")
         }
+        async fn translate(&self, _texts: &[String], _target_lang: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
+        async fn broaden_query(&self, _query: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
     }
 
     struct ErrProvider;
@@ -265,6 +271,12 @@ mod tests {
         ) -> anyhow::Result<Vec<ScoredCandidate>> {
             Err(anyhow::anyhow!("boom"))
         }
+        async fn translate(&self, _texts: &[String], _target_lang: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
+        async fn broaden_query(&self, _query: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
     }
 
     struct PanicIfCalledProvider;
@@ -289,6 +301,12 @@ mod tests {
             _hint: Option<&str>,
         ) -> anyhow::Result<Vec<ScoredCandidate>> {
             panic!("curate_by_hint no debe llamar al proveedor cuando todo está cacheado");
+        }
+        async fn translate(&self, _texts: &[String], _target_lang: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
+        async fn broaden_query(&self, _query: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
         }
     }
 
@@ -363,6 +381,12 @@ mod tests {
             _hint: Option<&str>,
         ) -> anyhow::Result<Vec<ScoredCandidate>> {
             Ok((0..candidates.len()).map(|i| ScoredCandidate { index: i, score: self.0 }).collect())
+        }
+        async fn translate(&self, _texts: &[String], _target_lang: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
+        }
+        async fn broaden_query(&self, _query: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!("no lo usa este test")
         }
     }
 
@@ -514,6 +538,12 @@ mod tests {
                 } else {
                     Err(anyhow::anyhow!("proveedor caído a mitad del delta"))
                 }
+            }
+            async fn translate(&self, _texts: &[String], _target_lang: &str) -> anyhow::Result<Vec<String>> {
+                unreachable!("no lo usa este test")
+            }
+            async fn broaden_query(&self, _query: &str) -> anyhow::Result<Vec<String>> {
+                unreachable!("no lo usa este test")
             }
         }
 

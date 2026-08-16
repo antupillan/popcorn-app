@@ -34,6 +34,24 @@ librqbit-core = "5.0.0"
 # Tipo ByteBufOwned que pide torrent_metainfo::torrent_from_bytes — mismo
 # criterio que librqbit-core arriba (ya resuelta, solo se hace directa).
 buffers = { package = "librqbit-buffers", version = "4.2.0" }
+# Detector de salud de indexers (indexers/torrent_health.rs): cliente DHT
+# standalone (DhtBuilder::new/get_peers) para sondear el swarm real sin
+# necesitar una sesión de torrent completa. Ya resuelta como transitiva de
+# librqbit (Cargo.lock), mismo criterio que librqbit-core arriba.
+librqbit-dht = "5.3.1"
+# Solo TrackerComms::start es invocable desde afuera de esta crate —
+# AnnounceFields/AnnounceResponse/TrackerAddr viven en un módulo privado sin
+# re-exportar (verificado leyendo el fuente vendorizado, no asumido del
+# plan original), así que UdpTrackerClient::announce no se puede llamar
+# pese a ser pub fn. v1 del detector de salud usa TrackerComms::start
+# (conteo de peers, sin desglose de seeders/leechers) — ver comentario en
+# torrent_health.rs.
+librqbit-tracker-comms = "3.0.0"
+# StreamExt::buffered (concurrencia acotada sin 'static, ver
+# torrent_health.rs) — ya resuelta como transitiva de
+# librqbit-tracker-comms (Cargo.lock), se suma directa por el mismo
+# criterio que las de arriba.
+futures = "0.3"
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }

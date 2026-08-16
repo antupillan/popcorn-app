@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import { api } from "../lib/api";
-import type { MediaItem } from "../types";
+import type { MediaItem, OpenSubtitlesResult, Subtitle } from "../types";
+import { srtToVtt } from "../lib/srt";
 
 type VideoPlayerProps =
   | { kind: "media"; item: MediaItem; onClose: () => void }
   | { kind: "channel"; title: string; url: string; sourceId: string | null; onClose: () => void }
   | { kind: "local"; path: string; name: string; onClose: () => void }
   | { kind: "online"; title: string; url: string; onClose: () => void }
-  | { kind: "recording"; id: string; name: string; durationSeconds: number; onClose: () => void };
+  | { kind: "recording"; id: string; name: string; durationSeconds: number; onClose: () => void }
+  | { kind: "youtube"; videoId: string; title: string; onClose: () => void };
 
 const DEFAULT_MAX_RECORDING_MINUTES = 180;
 
@@ -34,6 +36,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const onlineUrl = props.kind === "online" ? props.url : null;
   const playbackRecordingId = props.kind === "recording" ? props.id : null;
   const recordingDurationSeconds = props.kind === "recording" ? props.durationSeconds : null;
+  const youtubeVideoId = props.kind === "youtube" ? props.videoId : null;
 
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +50,42 @@ export function VideoPlayer(props: VideoPlayerProps) {
     : kind === "local" ? `popcorn.playbackPosition.local:${localPath}`
     : kind === "recording" ? `popcorn.playbackPosition.recording:${playbackRecordingId}`
     : null;
+
+  // Subtítulos (Parte A, ver Planes_mejora_popcorn/subtitulos_ia.txt) —
+  // solo "media"/"local", mismo id que usa SubtitulosView para guardarlos
+  // (media_items.id o el path del archivo). "channel"/"online"/"recording"
+  // no tienen timeline fijo o son efímeros; "youtube" es el iframe oficial,
+  // no un <video> propio — ninguno de esos casos puede llevar un <track>.
+  const [subtitleTracks, setSubtitleTracks] = useState<{ url: string; lang: string; isDefault: boolean }[]>([]);
+  const subtitleContentId = kind === "media" ? mediaItemId : kind === "local" ? localPath : null;
+
+  useEffect(() => {
+    if (!subtitleContentId) {
+      setSubtitleTracks([]);
+      return;
+    }
+    let cancelled = false;
+    const createdUrls: string[] = [];
+    api
+      .listSubtitles(subtitleContentId)
+      .then((subs: Subtitle[]) => {
+        if (cancelled) return;
+        const tracks = subs.map((s, i) => {
+          const blobUrl = URL.createObjectURL(new Blob([srtToVtt(s.content)], { type: "text/vtt" }));
+          createdUrls.push(blobUrl);
+          return { url: blobUrl, lang: s.language, isDefault: i === subs.length - 1 };
+        });
+        setSubtitleTracks(tracks);
+      })
+      .catch((e) => console.error(`[popcorn] no se pudieron cargar subtítulos: ${e}`));
+    // Cleanup real: corre tanto al cambiar de ítem como al cerrar el
+    // reproductor (unmount) — evita filtrar blob URLs en cualquiera de
+    // los dos casos.
+    return () => {
+      cancelled = true;
+      createdUrls.forEach((u) => URL.revokeObjectURL(u));
+    };
+  }, [subtitleContentId]);
 
   useEffect(() => {
     setUrl(null);
@@ -72,8 +111,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
       setUrl(onlineUrl);
     } else if (kind === "recording" && playbackRecordingId) {
       api.getRecordingStreamUrl(playbackRecordingId).then(setUrl).catch((e) => setError(String(e)));
+    } else if (kind === "youtube" && youtubeVideoId) {
+      // `-nocookie`: el contenido nunca sale de los servidores de Google, la
+      // app no descarga nada — el IFrame Player oficial reproduce directo
+      // (ver fuente_youtube.txt). Sin fetch al backend, mismo criterio que
+      // "channel"/"online".
+      setUrl(`https://www.youtube-nocookie.com/embed/${youtubeVideoId}?autoplay=1`);
     }
-  }, [kind, mediaItemId, channelUrl, localPath, onlineUrl, playbackRecordingId]);
+  }, [kind, mediaItemId, channelUrl, localPath, onlineUrl, playbackRecordingId, youtubeVideoId]);
 
   useEffect(() => {
     if ((kind !== "channel" && kind !== "recording") || !url) return;
@@ -155,8 +200,82 @@ export function VideoPlayer(props: VideoPlayerProps) {
     localStorage.setItem(resumeKey, String(video.currentTime));
   }
 
+  // Botón CC propio en vez de confiar en los controles nativos del <video>
+  // — no verificado que WebKitGTK (WebView de Linux) muestre un toggle de
+  // captions nativo cuando hay <track>, así que se controla la visibilidad
+  // a mano vía el TextTrackList real del elemento. Solo aplica a
+  // "media"/"local" (mismos kinds que pueden tener subtitleTracks).
+  const [ccMenuOpen, setCcMenuOpen] = useState(false);
+  const [activeTrackIdx, setActiveTrackIdx] = useState<number | null>(null);
+
+  // Búsqueda en OpenSubtitles desde el propio menú CC (Parte B del plan de
+  // subtítulos) — opt-in con un clic, nunca automático (gasta cuota diaria
+  // real de descargas, ver Ajustes → OpenSubtitles).
+  const [osResults, setOsResults] = useState<OpenSubtitlesResult[] | null>(null);
+  const [osSearching, setOsSearching] = useState(false);
+  const [osDownloadingId, setOsDownloadingId] = useState<number | null>(null);
+  const [osError, setOsError] = useState<string | null>(null);
+
+  async function searchOpenSubtitles() {
+    setOsSearching(true);
+    setOsError(null);
+    try {
+      setOsResults(await api.searchOpensubtitles(title, "es"));
+    } catch (e) {
+      setOsError(String(e));
+    } finally {
+      setOsSearching(false);
+    }
+  }
+
+  async function downloadOpenSubtitlesResult(fileId: number) {
+    if (!subtitleContentId) return;
+    setOsDownloadingId(fileId);
+    setOsError(null);
+    try {
+      const content = await api.downloadOpensubtitlesSubtitle(fileId);
+      await api.addSubtitleText(subtitleContentId, "es", "original", content);
+      // Recarga la lista real de subtítulos del ítem — mismo efecto que ya
+      // dispara la carga inicial, sin duplicar esa lógica acá.
+      const subs = await api.listSubtitles(subtitleContentId);
+      setSubtitleTracks((prev) => {
+        prev.forEach((t) => URL.revokeObjectURL(t.url));
+        return subs.map((s, i) => ({
+          url: URL.createObjectURL(new Blob([srtToVtt(s.content)], { type: "text/vtt" })),
+          lang: s.language,
+          isDefault: i === subs.length - 1,
+        }));
+      });
+      setOsResults(null);
+    } catch (e) {
+      setOsError(String(e));
+    } finally {
+      setOsDownloadingId(null);
+    }
+  }
+
+  useEffect(() => {
+    // Al cargar tracks nuevos, activa el marcado `default` (el más
+    // reciente) si hay alguno — mismo criterio que ya decide `isDefault`
+    // al armar subtitleTracks.
+    const defaultIdx = subtitleTracks.findIndex((t) => t.isDefault);
+    setActiveTrackIdx(subtitleTracks.length > 0 ? (defaultIdx === -1 ? 0 : defaultIdx) : null);
+  }, [subtitleTracks]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    // El propio <track> con `default` ya deja el navegador mostrarlo solo,
+    // pero acá se fuerza el estado real contra `activeTrackIdx` para que
+    // el botón CC pueda apagarlo/cambiarlo aunque el navegador no exponga
+    // su propio control.
+    Array.from(video.textTracks).forEach((tt, i) => {
+      tt.mode = i === activeTrackIdx ? "showing" : "hidden";
+    });
+  }, [activeTrackIdx, subtitleTracks]);
+
   // REC vive en el reproductor, no en la lista de canales (estilo
-  // videocasetera: grabás lo que estás viendo) — solo aplica a "channel".
+  // videocasetera: grabas lo que estás viendo) — solo aplica a "channel".
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [showDurationPrompt, setShowDurationPrompt] = useState(false);
@@ -205,6 +324,111 @@ export function VideoPlayer(props: VideoPlayerProps) {
         <div className="flex items-center justify-between gap-2">
           <h2 className="min-w-0 truncate text-sm font-medium text-white">{title}</h2>
           <div className="flex shrink-0 items-center gap-2">
+            {(kind === "media" || kind === "local") && (
+              <div className="relative">
+                <button
+                  onClick={() => setCcMenuOpen((o) => !o)}
+                  title="Subtítulos"
+                  className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold ${
+                    activeTrackIdx !== null
+                      ? "border-[var(--accent)] text-[var(--accent)]"
+                      : "border-zinc-600 text-zinc-300 hover:bg-white/10"
+                  }`}
+                >
+                  CC
+                </button>
+                {ccMenuOpen && (
+                  <div
+                    className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
+                    onClick={() => setCcMenuOpen(false)}
+                  >
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex max-h-[70vh] w-72 flex-col overflow-hidden rounded-md border border-zinc-700 bg-zinc-900 text-xs shadow-xl"
+                  >
+                    <div className="flex items-center justify-between border-b border-zinc-700 px-2 py-1.5">
+                      <h3 className="text-[11px] font-semibold text-zinc-200">Subtítulos</h3>
+                      <button
+                        onClick={() => setCcMenuOpen(false)}
+                        className="rounded p-0.5 text-zinc-400 hover:bg-white/10"
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
+                          <path d="M18 6 6 18M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                    <div className="overflow-y-auto p-1">
+                    {subtitleTracks.length === 0 && osResults === null && (
+                      <div className="flex flex-col gap-1.5 p-1.5">
+                        <p className="text-[11px] text-zinc-400">
+                          Sin subtítulos para este ítem — puedes agregarlo en la sección Subtítulos del menú lateral, o
+                          buscarlo directo acá.
+                        </p>
+                        <button
+                          onClick={searchOpenSubtitles}
+                          disabled={osSearching}
+                          className="rounded-md border border-[var(--accent)] px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white disabled:opacity-50"
+                        >
+                          {osSearching ? "Buscando en OpenSubtitles…" : "Buscar en OpenSubtitles"}
+                        </button>
+                        {osError && <p className="text-[10px] text-red-400">{osError}</p>}
+                      </div>
+                    )}
+                    {osResults !== null && (
+                      <div className="flex flex-col gap-1 p-1">
+                        <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                          Resultados de OpenSubtitles
+                        </p>
+                        {osResults.length === 0 && (
+                          <p className="px-1 text-[11px] text-zinc-400">Sin resultados para "{title}".</p>
+                        )}
+                        {osResults.map((r) => (
+                          <button
+                            key={r.file_id}
+                            onClick={() => downloadOpenSubtitlesResult(r.file_id)}
+                            disabled={osDownloadingId === r.file_id}
+                            className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-zinc-200 hover:bg-white/10 disabled:opacity-50"
+                          >
+                            <span className="min-w-0 truncate">{r.file_name}</span>
+                            <span className="shrink-0 text-[10px] text-[var(--accent-fg)]">
+                              {osDownloadingId === r.file_id ? "Descargando…" : "Descargar"}
+                            </span>
+                          </button>
+                        ))}
+                        {osError && <p className="px-1 text-[10px] text-red-400">{osError}</p>}
+                      </div>
+                    )}
+                    {subtitleTracks.map((t, i) => (
+                      <button
+                        key={t.url}
+                        onClick={() => {
+                          setActiveTrackIdx(i);
+                          setCcMenuOpen(false);
+                        }}
+                        className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-left hover:bg-white/10 ${
+                          activeTrackIdx === i ? "text-[var(--accent-fg)]" : "text-zinc-200"
+                        }`}
+                      >
+                        {t.lang}
+                      </button>
+                    ))}
+                    {subtitleTracks.length > 0 && (
+                      <button
+                        onClick={() => {
+                          setActiveTrackIdx(null);
+                          setCcMenuOpen(false);
+                        }}
+                        className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-zinc-400 hover:bg-white/10"
+                      >
+                        Desactivar
+                      </button>
+                    )}
+                    </div>
+                  </div>
+                  </div>
+                )}
+              </div>
+            )}
             {kind === "channel" && !recordingId && !showDurationPrompt && (
               <button
                 onClick={() => setShowDurationPrompt(true)}
@@ -262,9 +486,26 @@ export function VideoPlayer(props: VideoPlayerProps) {
         <div className="flex aspect-video items-center justify-center overflow-hidden rounded-xl bg-black">
           {error && <p className="p-4 text-center text-xs text-red-400">{error}</p>}
           {!error && !url && (
-            <p className="text-xs text-zinc-400">Resolviendo fuente de streaming…</p>
+            <p className="max-w-xs text-center text-xs text-zinc-400">
+              Resolviendo fuente de streaming… si el formato no es compatible con el reproductor, puede tardar más —
+              solo la primera vez que abras este archivo, después es rápido.
+            </p>
           )}
-          {url && (
+          {url && kind === "youtube" && (
+            // IFrame Player oficial de YouTube — el WebView carga la página
+            // de Google directo, ningún byte de video pasa por el backend de
+            // Popcorn (ver fuente_youtube.txt). Controles propios de
+            // YouTube, sin overlay ni resume: fuera del alcance de un
+            // `<video>` normal.
+            <iframe
+              src={url}
+              title={title}
+              className="h-full w-full"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            />
+          )}
+          {url && kind !== "youtube" && (
             <video
               ref={videoRef}
               src={kind !== "channel" && kind !== "recording" ? url : undefined}
@@ -306,10 +547,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
                 const position = el
                   ? `${el.currentTime.toFixed(1)}s/${el.duration ? el.duration.toFixed(1) : "?"}s`
                   : "posición desconocida";
-                console.error(`[popcorn] video playback error: ${detail} en ${position}`);
+                console.error(`[popcorn] video playback error: ${detail} en ${position} — src=${url}`);
                 setError(`El reproductor no pudo cargar el stream (${detail}, en ${position}).`);
               }}
-            />
+            >
+              {subtitleTracks.map((t) => (
+                <track key={t.url} kind="subtitles" src={t.url} srcLang={t.lang} label={t.lang} default={t.isDefault} />
+              ))}
+            </video>
           )}
         </div>
       </div>

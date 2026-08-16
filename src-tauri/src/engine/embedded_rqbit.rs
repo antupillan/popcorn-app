@@ -1,10 +1,13 @@
+#[cfg(test)]
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 
 use anyhow::Context;
 use async_trait::async_trait;
 use librqbit::api::TorrentIdOrHash;
-use librqbit::{AddTorrent, AddTorrentOptions, Session, TorrentStatsState};
+use librqbit::{AddTorrent, AddTorrentOptions, Session, SessionOptions, TorrentStatsState};
 
 use super::stream_server::{HttpFallbackMap, LocalFileEntry, LocalFileMap};
 use super::{AddTorrentSource, TorrentEngine, TorrentInfo};
@@ -21,14 +24,23 @@ pub struct EmbeddedRqbit {
     downloads_dir: std::path::PathBuf,
 }
 
-/// Crea la sesión real de librqbit, separada de `EmbeddedRqbit::new` porque
-/// el servidor de streaming compartido (`stream_server::spawn`) necesita
-/// esta sesión ya creada para exponer `/stream/*` (P2P en vivo) — y a su vez
-/// `EmbeddedRqbit` necesita el puerto que devuelve `spawn`. Orden real en
-/// `lib.rs::setup`: `create_session` -> `stream_server::spawn(Some(session))`
-/// -> `EmbeddedRqbit::new(session, puerto, ...)`.
+/// Atajo de `create_session_with_proxy(dir, None)` para tests/usos
+/// aislados sin proxy — `lib.rs::setup` llama `create_session_with_proxy`
+/// directo (necesita pasar el proxy real del keychain), no esta función.
+#[cfg(test)]
 pub async fn create_session(download_dir: std::path::PathBuf) -> anyhow::Result<Arc<Session>> {
-    Session::new(download_dir)
+    create_session_with_proxy(download_dir, None).await
+}
+
+pub async fn create_session_with_proxy(
+    download_dir: std::path::PathBuf,
+    socks_proxy_url: Option<String>,
+) -> anyhow::Result<Arc<Session>> {
+    let opts = SessionOptions {
+        socks_proxy_url,
+        ..Default::default()
+    };
+    Session::new_with_opts(download_dir, opts)
         .await
         .context("no se pudo iniciar la sesión de librqbit")
 }
@@ -60,6 +72,7 @@ impl EmbeddedRqbit {
     /// caller repita las tres llamadas. `lib.rs::setup` NO usa esto porque
     /// ahí el servidor y los mapas se comparten con el motor externo que
     /// pueda estar activo.
+    #[cfg(test)]
     pub async fn new_standalone(download_dir: std::path::PathBuf) -> anyhow::Result<Self> {
         let session = create_session(download_dir.clone()).await?;
         let http_fallback: HttpFallbackMap = Arc::new(Mutex::new(HashMap::new()));
@@ -178,14 +191,19 @@ impl TorrentEngine for EmbeddedRqbit {
     async fn stream_url(&self, id: &str, file_idx: usize) -> anyhow::Result<String> {
         // Valida que el torrent exista antes de devolver una URL que
         // apuntaría a un 404 — falla temprano en vez de silencioso.
-        self.get_handle(id)?;
+        let handle = self.get_handle(id)?;
 
         // Si hay un fallback HTTP registrado (fuentes tipo archive.org que
-        // dependen de webseeds que librqbit no soporta), servir por ahí en
-        // vez de por P2P — el torrent sigue descargando/sembrando en
-        // segundo plano igual, esto sólo decide de dónde lee el reproductor.
+        // dependen de webseeds que librqbit no soporta) Y el torrent
+        // todavía no terminó de descargar, servir por ahí en vez de por
+        // P2P — ayuda a completar mientras no hay peers reales. Una vez
+        // `finished` (archivo ya completo en disco, sembrando), servir
+        // siempre local: depender del servidor remoto para siempre, aun
+        // con el archivo ya descargado, es innecesario y fragil ante
+        // caídas del origen (bug real reportado en vivo: reproducir un
+        // torrent ya completo seguía esperando a archive.org).
         let has_fallback = self.http_fallback.lock().unwrap().contains_key(id);
-        if has_fallback {
+        if has_fallback && !handle.stats().finished {
             return Ok(format!("http://127.0.0.1:{}/proxy/{id}", self.stream_port));
         }
 
@@ -316,6 +334,43 @@ mod e2e {
         );
         let body = ranged.bytes().await.expect("leer body");
         assert_eq!(body.len(), 1024, "el cuerpo debe traer exactamente los 1024 bytes pedidos");
+    }
+
+    /// Reproduce el bug real reportado por el usuario en vivo (ver plan
+    /// `proxy_vpn_torrents_y_catalogo.txt`, sección del 2026-08-13): pedir
+    /// `/stream/{id}/{file_idx}` (P2P nativo, sin fallback HTTP registrado
+    /// — a diferencia de `add_real_archive_org_torrent_and_stream_it`)
+    /// inmediatamente después de `add()`, sin ninguna espera manual. Antes
+    /// del fix, `stream_handler` fallaba con 404 si el torrent seguía en
+    /// `Initializing`; ahora espera con `wait_until_initialized()`. Con un
+    /// `.torrent` completo (metadata ya resuelta, a diferencia de un
+    /// magnet) la ventana de la carrera es angosta — este test no
+    /// garantiza reproducir el fallo previo al fix, pero sí ejerce el
+    /// camino de código real contra librqbit real, no un mock.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "red real, no apto para CI por defecto — correr manualmente"]
+    async fn stream_endpoint_works_immediately_after_add_without_fallback() {
+        let tmp = tempdir();
+        let engine = EmbeddedRqbit::new_standalone(tmp.clone()).await.expect("crear sesión");
+
+        let http = reqwest::Client::new();
+        let torrent_bytes = archive_org::fetch_torrent_bytes(&http, "turner_video_444")
+            .await
+            .expect("descargar .torrent de archive.org");
+
+        let info = TorrentEngine::add(&engine, AddTorrentSource::TorrentBytes(torrent_bytes))
+            .await
+            .expect("agregar torrent al motor");
+
+        let url = TorrentEngine::stream_url(&engine, &info.id, 0).await.expect("stream_url");
+        assert!(url.contains("/stream/"), "sin fallback registrado, debe ir por /stream/: {url}");
+
+        let resp = http.get(&url).send().await.expect("request a /stream/ inmediatamente tras agregar");
+        assert!(
+            resp.status().is_success(),
+            "esperaba 200/206 pidiendo el stream apenas agregado, recibí {}",
+            resp.status()
+        );
     }
 
     /// Reproducción de bug #18 (plan: "reproducción falla ~75% del video").
@@ -475,6 +530,73 @@ mod e2e {
         let dir = std::env::temp_dir().join(format!("popcorn-e2e-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Pedido explícito del usuario tras dudar de que el bug de reproducción
+    /// fuera solo "archive.org está lento": un test real de extremo a
+    /// extremo del servidor de streaming (`/stream/`) que NO toca la red
+    /// para nada — usa `librqbit::create_torrent` para armar un `.torrent`
+    /// real a partir de `testdata/sample.mkv` (mismo fixture que ya usan
+    /// los tests de remux) directo en el `download_dir` del motor, lo
+    /// siembra desde ahí y pide el stream real por HTTP. Si esto falla, el
+    /// bug está en nuestro propio código (`stream_handler` en
+    /// `stream_server.rs`); si pasa, la inestabilidad reproducida antes
+    /// (`error decoding response body` en
+    /// `stream_url_serves_real_bytes_for_an_already_finished_seeded_torrent`)
+    /// es enteramente de archive.org, no nuestra. Sin `#[ignore]`: no
+    /// necesita red real, corre en la suite normal.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_url_serves_real_bytes_for_a_locally_seeded_torrent_no_network() {
+        let tmp = tempdir();
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/sample.mkv");
+        let seeded_path = tmp.join("sample.mkv");
+        std::fs::copy(&source, &seeded_path).expect("copiar el fixture local al download_dir");
+
+        let torrent = librqbit::create_torrent(&seeded_path, librqbit::CreateTorrentOptions::default())
+            .await
+            .expect("crear .torrent local a partir del fixture, sin red");
+        let torrent_bytes = torrent.as_bytes().expect("serializar el .torrent").to_vec();
+
+        let engine = EmbeddedRqbit::new_standalone(tmp).await.expect("crear sesión");
+        let info = TorrentEngine::add_seeding_from_disk(&engine, AddTorrentSource::TorrentBytes(torrent_bytes), None)
+            .await
+            .expect("sembrar el torrent local");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut finished = false;
+        while std::time::Instant::now() < deadline {
+            let list = TorrentEngine::list(&engine).await.unwrap();
+            let Some(current) = list.into_iter().find(|t| t.id == info.id) else {
+                panic!("el torrent desapareció de la lista mientras se esperaba el chequeo");
+            };
+            if current.finished {
+                finished = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(finished, "el chequeo de piezas de un archivo local chico no debería tardar más de 15s");
+
+        let url = TorrentEngine::stream_url(&engine, &info.id, 0)
+            .await
+            .expect("stream_url para un torrent finished, sin fallback");
+        assert!(url.contains("/stream/"), "sin fallback registrado, debe ir por /stream/: {url}");
+
+        let http = reqwest::Client::new();
+        let resp = http.get(&url).send().await.expect("request a /stream/ para el fixture local");
+        assert!(
+            resp.status().is_success(),
+            "esperaba 200 sirviendo el archivo completo, recibí {}",
+            resp.status()
+        );
+        let bytes = resp
+            .bytes()
+            .await
+            .expect("leer el cuerpo — si esto falla, el bug está en nuestro propio servidor de streaming");
+
+        let expected = std::fs::read(&source).expect("leer el fixture original para comparar");
+        assert_eq!(bytes.len(), expected.len(), "el tamaño servido debe coincidir con el archivo real");
+        assert_eq!(&bytes[..], &expected[..], "los bytes servidos deben ser idénticos al archivo original");
     }
 }
 

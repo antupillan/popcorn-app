@@ -66,6 +66,24 @@ export interface Channel {
   source_id: string;
 }
 
+export interface YoutubeSource {
+  id: string;
+  name: string;
+  channel_url: string;
+  channel_id: string | null;
+  category: "cine" | "series" | "anime";
+  enabled: boolean;
+}
+
+export interface YoutubeVideo {
+  video_id: string;
+  title: string;
+  published_at: string;
+  thumbnail_url: string | null;
+  source_id: string;
+  category: "cine" | "series" | "anime";
+}
+
 export interface RecordingInfo {
   id: string;
   source_id: string | null;
@@ -112,6 +130,30 @@ export interface IndexerResult {
   size: string | null;
   seeders: string | null;
   source_indexer: string;
+}
+
+export interface TorrentHealth {
+  peers_found: number | null;
+  source: "tracker" | "dht" | "sin datos";
+}
+
+export interface ScoredCandidate {
+  index: number;
+  score: number;
+}
+
+export interface Subtitle {
+  id: string;
+  media_item_id: string;
+  language: string;
+  origin: "original" | "ai_translated" | "human_edited";
+  content: string;
+  created_at: string;
+}
+
+export interface OpenSubtitlesResult {
+  file_id: number;
+  file_name: string;
 }
 
 export interface SourceSettings {
