@@ -68,6 +68,19 @@ pub fn get_os() -> &'static str {
     std::env::consts::OS
 }
 
+/// Alterna Mica/vibrancy en runtime (toggle de batería en Ajustes →
+/// Ventana). El estado inicial en tauri.conf.json (windowEffects) solo
+/// aplica al crear la ventana — set_effects es la única forma de
+/// cambiarlo después. No-op documentado por Tauri en Linux.
+#[tauri::command]
+pub fn set_window_effects_enabled(window: tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
+    let effects = enabled.then(|| tauri::utils::config::WindowEffectsConfig {
+        effects: vec![tauri::utils::WindowEffect::Mica, tauri::utils::WindowEffect::Sidebar],
+        ..Default::default()
+    });
+    window.set_effects(effects).map_err(|e| e.to_string())
+}
+
 /// Tope de subida del sembrado automático: 1 Mbps en bytes/seg (librqbit
 /// opera en bytes, no bits). Fijo hasta que Etapa 2 lo vuelva ajustable.
 pub(crate) const DEFAULT_SEED_UPLOAD_BPS: u32 = 1_000_000 / 8;

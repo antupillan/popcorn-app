@@ -10,12 +10,19 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "enableGTKAppId": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "popcorn-app",
         "width": 800,
         "height": 600,
-        "decorations": false
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "windowEffects": {
+          "effects": ["mica", "sidebar"]
+        }
       }
     ],
     "security": {

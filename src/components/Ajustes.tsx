@@ -60,6 +60,9 @@ interface AjustesProps {
   onSetTitleBarSide: (side: TitleBarSide) => void;
   titleBarOrder: TitleBarOrder;
   onSetTitleBarOrder: (order: TitleBarOrder) => void;
+  os: string | null;
+  windowEffectsEnabled: boolean;
+  onSetWindowEffectsEnabled: (enabled: boolean) => void;
 }
 
 // Panel flotante esmerilado con secciones en acordeón — reemplaza las tabs
@@ -73,6 +76,9 @@ export function Ajustes({
   onSetTitleBarSide,
   titleBarOrder,
   onSetTitleBarOrder,
+  os,
+  windowEffectsEnabled,
+  onSetWindowEffectsEnabled,
 }: AjustesProps) {
   const [expanded, setExpanded] = useState<SectionId>("ia");
 
@@ -125,6 +131,9 @@ export function Ajustes({
                   onSetTitleBarSide={onSetTitleBarSide}
                   titleBarOrder={titleBarOrder}
                   onSetTitleBarOrder={onSetTitleBarOrder}
+                  os={os}
+                  windowEffectsEnabled={windowEffectsEnabled}
+                  onSetWindowEffectsEnabled={onSetWindowEffectsEnabled}
                 />
               )}
             </AccordionSection>
@@ -1105,12 +1114,23 @@ interface VentanaTabProps {
   onSetTitleBarSide: (side: TitleBarSide) => void;
   titleBarOrder: TitleBarOrder;
   onSetTitleBarOrder: (order: TitleBarOrder) => void;
+  os: string | null;
+  windowEffectsEnabled: boolean;
+  onSetWindowEffectsEnabled: (enabled: boolean) => void;
 }
 
 // No hay forma de detectar de qué lado (ni en qué orden) pone tu
 // escritorio los controles de ventana — depende del tema/config del WM,
 // no del SO. Se deja como preferencia explícita en vez de adivinar.
-function VentanaTab({ titleBarSide, onSetTitleBarSide, titleBarOrder, onSetTitleBarOrder }: VentanaTabProps) {
+function VentanaTab({
+  titleBarSide,
+  onSetTitleBarSide,
+  titleBarOrder,
+  onSetTitleBarOrder,
+  os,
+  windowEffectsEnabled,
+  onSetWindowEffectsEnabled,
+}: VentanaTabProps) {
   return (
     <div className="flex flex-col gap-2 p-4 pt-0">
       <div className="flex items-center justify-between gap-2 rounded-lg border border-zinc-200 px-3 py-2.5 dark:border-zinc-800">
@@ -1172,6 +1192,39 @@ function VentanaTab({ titleBarSide, onSetTitleBarSide, titleBarOrder, onSetTitle
           </button>
         </div>
       </div>
+
+      {(os === "windows" || os === "macos") && (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-zinc-200 px-3 py-2.5 dark:border-zinc-800">
+          <div>
+            <p className="text-xs font-medium text-zinc-900 dark:text-zinc-100">Efectos de ventana nativos</p>
+            <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+              Mica/vibrancy en la barra lateral y el título. Desactivalo para ahorrar batería.
+            </p>
+          </div>
+          <div className="flex shrink-0 gap-1">
+            <button
+              onClick={() => onSetWindowEffectsEnabled(true)}
+              className={`rounded-md border px-2.5 py-1.5 text-[11px] font-medium ${
+                windowEffectsEnabled
+                  ? "border-[var(--accent)] bg-[var(--accent)] text-white"
+                  : "border-zinc-300 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              }`}
+            >
+              Activado
+            </button>
+            <button
+              onClick={() => onSetWindowEffectsEnabled(false)}
+              className={`rounded-md border px-2.5 py-1.5 text-[11px] font-medium ${
+                !windowEffectsEnabled
+                  ? "border-[var(--accent)] bg-[var(--accent)] text-white"
+                  : "border-zinc-300 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              }`}
+            >
+              Desactivado
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

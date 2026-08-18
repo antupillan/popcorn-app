@@ -9,6 +9,7 @@ mod indexers;
 mod iptv;
 mod keychain;
 mod local_library;
+mod native_icons;
 mod online_library;
 mod opensubtitles;
 mod os_accent;
@@ -99,6 +100,17 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // bundle.icon (tauri.conf.json) solo aplica al binario empaquetado
+            // (.desktop/tema de íconos, recurso .exe, bundle .icns) — en
+            // runtime (incluido `tauri dev`) la ventana no toma ningún ícono
+            // por sí sola, hay que setearlo acá explícitamente.
+            if let Some(window) = app.get_webview_window("main") {
+                let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))?;
+                window.set_icon(icon)?;
+            }
+
+            native_icons::watch_icon_theme_changes(app.handle().clone());
+
             let conn = db::open(app.handle())?;
             // RecorderState arranca vacío en cada proceso nuevo — cualquier
             // fila 'recording' de una corrida anterior quedó huérfana.
@@ -132,6 +144,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_os,
+            commands::set_window_effects_enabled,
+            native_icons::get_native_window_icons,
             commands::get_engine_fallback_warning,
             os_accent::get_os_accent_color,
             commands::add_torrent,

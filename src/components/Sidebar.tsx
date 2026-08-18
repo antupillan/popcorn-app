@@ -12,6 +12,7 @@ interface SidebarProps {
   active: View;
   onSelect: (view: View) => void;
   onOpenAjustes: () => void;
+  translucent: boolean;
 }
 
 interface NavItemProps {
@@ -73,14 +74,14 @@ const SettingsIcon = () => (
   </svg>
 );
 
-export function Sidebar({ active, onSelect, onOpenAjustes }: SidebarProps) {
+export function Sidebar({ active, onSelect, onOpenAjustes, translucent }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
 
   return (
     <aside
-      className={`flex shrink-0 flex-col border-r border-zinc-200 bg-white transition-all duration-200 dark:border-zinc-800 dark:bg-zinc-950 ${
-        isCollapsed ? "w-14" : "w-56"
-      }`}
+      className={`flex shrink-0 flex-col border-r border-zinc-200 transition-all duration-200 dark:border-zinc-800 ${
+        translucent ? "bg-white/70 dark:bg-zinc-950/60" : "bg-white dark:bg-zinc-950"
+      } ${isCollapsed ? "w-14" : "w-56"}`}
     >
       <div className="flex items-center justify-between border-b border-zinc-200 p-3 dark:border-zinc-800">
         {!isCollapsed && (

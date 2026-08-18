@@ -32,6 +32,13 @@ export const api = {
 
   getOsAccentColor: () => invoke<string | null>("get_os_accent_color"),
 
+  setWindowEffectsEnabled: (enabled: boolean) => invoke<void>("set_window_effects_enabled", { enabled }),
+
+  // data: URIs de window-close/minimize/maximize/restore del tema de
+  // íconos real del usuario — solo Linux (native_icons.rs), objeto vacío
+  // en cualquier otro caso, ver TitleBar.tsx para el fallback dibujado.
+  getNativeWindowIcons: () => invoke<Record<string, string>>("get_native_window_icons"),
+
   // `Some(mensaje)` solo si el motor externo configurado no pudo conectar
   // al arrancar y la app cayó al motor embebido — ver lib.rs::setup.
   getEngineFallbackWarning: () => invoke<string | null>("get_engine_fallback_warning"),

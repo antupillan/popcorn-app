@@ -33,6 +33,7 @@ const FIRST_RUN_KEY = "popcorn.acceptedFirstRun";
 const THEME_KEY = "popcorn.theme";
 const TITLEBAR_SIDE_KEY = "popcorn.titleBarControlsSide";
 const TITLEBAR_ORDER_KEY = "popcorn.titleBarButtonOrder";
+const WINDOW_EFFECTS_KEY = "popcorn.windowEffects";
 
 function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number, initial: T) {
   const [data, setData] = useState<T>(initial);
@@ -67,6 +68,12 @@ function App() {
   const [titleBarOrder, setTitleBarOrder] = useState<TitleBarOrder>(
     () => (localStorage.getItem(TITLEBAR_ORDER_KEY) as TitleBarOrder | null) ?? "minimizeFirst",
   );
+  // Activados por defecto (decisión del usuario) — el toggle en Ajustes →
+  // Ventana es para desactivarlos, no para activarlos.
+  const [windowEffectsEnabled, setWindowEffectsEnabled] = useState<boolean>(
+    () => localStorage.getItem(WINDOW_EFFECTS_KEY) !== "0",
+  );
+  const [os, setOs] = useState<string | null>(null);
   const [view, setView] = useState<View>("biblioteca");
   const [bibliotecaTab, setBibliotecaTab] = useState<BibliotecaTab>("online");
   const [addSourceModal, setAddSourceModal] = useState<SourceGroup | null>(null);
@@ -101,6 +108,26 @@ function App() {
   useEffect(() => {
     api.getEngineFallbackWarning().then(setEngineFallbackWarning).catch(() => {});
   }, []);
+
+  // Único punto de detección de SO — TitleBar y Sidebar lo reciben como
+  // prop en vez de pedirlo cada uno por su cuenta.
+  useEffect(() => {
+    api.getOs().then(setOs).catch(() => setOs("linux"));
+  }, []);
+
+  // set_effects es la única forma de cambiar Mica/vibrancy después de
+  // creada la ventana — el estado inicial de tauri.conf.json solo aplica
+  // una vez, al abrir. No-op documentado por Tauri en Linux.
+  useEffect(() => {
+    api.setWindowEffectsEnabled(windowEffectsEnabled).catch(() => {});
+  }, [windowEffectsEnabled]);
+
+  function setWindowEffectsEnabledAndPersist(enabled: boolean) {
+    localStorage.setItem(WINDOW_EFFECTS_KEY, enabled ? "1" : "0");
+    setWindowEffectsEnabled(enabled);
+  }
+
+  const nativeEffectsActive = windowEffectsEnabled && (os === "windows" || os === "macos");
 
   const isDark = theme === "system" ? systemPrefersDark : theme === "dark";
 
@@ -201,9 +228,18 @@ function App() {
   const totalDown = torrents.reduce((acc, t) => acc + t.download_speed_mbps, 0);
   const totalUp = torrents.reduce((acc, t) => acc + t.upload_speed_mbps, 0);
 
+  // Redondeado solo donde la convención del SO lo espera (macOS más, Windows
+  // sutil) — Linux se queda cuadrado, ver index.css ("paleta sobria
+  // KDE/macOS"). Solo se ve porque la ventana ya es transparent:true
+  // (tauri.conf.json): las puntas redondeadas dejan pasar el canal
+  // transparente del SO en vez de mostrar una esquina cuadrada opaca.
+  const cornerRadius = os === "macos" ? "rounded-xl" : os === "windows" ? "rounded-lg" : "";
+
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-slate-50 text-slate-900 dark:bg-zinc-950 dark:text-zinc-100">
-      <TitleBar controlsSide={titleBarSide} buttonOrder={titleBarOrder} />
+    <div
+      className={`flex h-screen w-screen flex-col overflow-hidden bg-slate-50 text-slate-900 dark:bg-zinc-950 dark:text-zinc-100 ${cornerRadius}`}
+    >
+      <TitleBar controlsSide={titleBarSide} buttonOrder={titleBarOrder} os={os} translucent={nativeEffectsActive} />
 
       {engineFallbackWarning && (
         <div className="flex items-center justify-between gap-2 bg-amber-500/15 px-3 py-1.5 text-[11px] text-amber-700 dark:text-amber-400">
@@ -218,7 +254,12 @@ function App() {
       )}
 
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar active={view} onSelect={setView} onOpenAjustes={() => setAjustesOpen(true)} />
+        <Sidebar
+          active={view}
+          onSelect={setView}
+          onOpenAjustes={() => setAjustesOpen(true)}
+          translucent={nativeEffectsActive}
+        />
 
         <div className="flex flex-1 flex-col overflow-hidden">
           <TopBar
@@ -328,6 +369,9 @@ function App() {
           onSetTitleBarSide={setTitleBarSideAndPersist}
           titleBarOrder={titleBarOrder}
           onSetTitleBarOrder={setTitleBarOrderAndPersist}
+          os={os}
+          windowEffectsEnabled={windowEffectsEnabled}
+          onSetWindowEffectsEnabled={setWindowEffectsEnabledAndPersist}
         />
       )}
     </div>

@@ -19,7 +19,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# "image-png" habilita Image::from_bytes/from_path (tauri::image) — se usa
+# en setup() para setear el ícono de ventana en runtime, algo que
+# bundle.icon en tauri.conf.json NO cubre (ese campo es solo para
+# empaquetado: .desktop/tema de íconos, recurso .exe, bundle .icns).
+# "macos-private-api" es exigido por build.rs (tauri_build::build valida,
+# no agrega solo) porque tauri.conf.json tiene app.macOSPrivateApi:true
+# (requisito de Tauri para que "transparent" funcione en macOS).
+tauri = { version = "2", features = ["image-png", "macos-private-api"] }
 tauri-plugin-opener = "2"
 # Primer plugin nuevo desde el setup inicial (ver Mandato de sincronización
 # de empaquetado) — selector nativo de carpeta para la biblioteca Local.
@@ -99,6 +106,11 @@ qbit-rs = "0.6.0"
 # transitiva de reqwest, se suma directa por el mismo criterio que
 # librqbit-core/buffers arriba.
 url = "2"
+# Codifica los íconos de ventana leídos del tema de íconos real (Linux,
+# native_icons.rs) como data URI para el frontend. Ya resuelta como
+# transitiva de tauri (0.22.1 en Cargo.lock), se suma directa sin inflar
+# el árbol.
+base64 = "0.22"
 
 # Solo Linux: el acento de color viene del portal freedesktop
 # (org.freedesktop.portal.Settings), que no existe en Windows/macOS — así
@@ -106,6 +118,12 @@ url = "2"
 # activamente mantenido (última publicación 2026-07-17), 12M+ descargas.
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.13", features = ["settings"] }
+# Lee window-close/minimize/maximize-symbolic del tema de íconos activo
+# del usuario (Breeze/Adwaita/etc, native_icons.rs) — ya resuelta como
+# transitiva de tauri-runtime-wry (0.18.2 en Cargo.lock, mismo ABI de
+# GTK3 que usa webkit2gtk), se suma directa por el mismo criterio que
+# librqbit-core arriba: cero riesgo nuevo de versión.
+gtk = "0.18"
 
 [dev-dependencies]
 # Solo para construir fixtures de .torrent reales en tests (armar la
