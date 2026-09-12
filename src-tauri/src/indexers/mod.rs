@@ -237,7 +237,9 @@ pub async fn search_indexers_with_ai(
     search_indexers_with_ai_inner(&http.0, provider.as_deref(), &enabled, &query).await
 }
 
-async fn search_one(
+// pub: reusado desde examples/diagnose_indexer.rs para probar un indexer
+// BYO real contra la DB del usuario sin pasar por la UI.
+pub async fn search_one(
     client: &reqwest::Client,
     indexer: &Indexer,
     query: &str,

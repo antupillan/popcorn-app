@@ -5,7 +5,7 @@ mod commands;
 mod db;
 mod engine;
 mod http_retry;
-mod indexers;
+pub mod indexers;
 mod iptv;
 mod keychain;
 mod local_library;
