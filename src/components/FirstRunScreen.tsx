@@ -6,7 +6,7 @@ interface FirstRunScreenProps {
 
 export function FirstRunScreen({ onAccept }: FirstRunScreenProps) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-zinc-950 p-4 text-zinc-200">
+    <div className="flex flex-1 items-center justify-center overflow-y-auto bg-zinc-950 p-4 text-zinc-200">
       <div className="my-8 w-full max-w-2xl rounded-xl border border-zinc-800 bg-zinc-900 p-6">
         <h1 className="text-lg font-bold text-white">Bienvenido a Popcorn</h1>
         <p className="mt-1 text-xs text-zinc-400">

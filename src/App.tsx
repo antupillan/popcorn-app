@@ -214,17 +214,6 @@ function App() {
     setSeedRatioTorrent(null);
   }
 
-  if (!acceptedFirstRun) {
-    return (
-      <FirstRunScreen
-        onAccept={() => {
-          localStorage.setItem(FIRST_RUN_KEY, "1");
-          setAcceptedFirstRun(true);
-        }}
-      />
-    );
-  }
-
   const totalDown = torrents.reduce((acc, t) => acc + t.download_speed_mbps, 0);
   const totalUp = torrents.reduce((acc, t) => acc + t.upload_speed_mbps, 0);
 
@@ -241,6 +230,15 @@ function App() {
     >
       <TitleBar controlsSide={titleBarSide} buttonOrder={titleBarOrder} os={os} translucent={nativeEffectsActive} />
 
+      {!acceptedFirstRun ? (
+        <FirstRunScreen
+          onAccept={() => {
+            localStorage.setItem(FIRST_RUN_KEY, "1");
+            setAcceptedFirstRun(true);
+          }}
+        />
+      ) : (
+      <>
       {engineFallbackWarning && (
         <div className="flex items-center justify-between gap-2 bg-amber-500/15 px-3 py-1.5 text-[11px] text-amber-700 dark:text-amber-400">
           <span>{engineFallbackWarning}</span>
@@ -373,6 +371,8 @@ function App() {
           windowEffectsEnabled={windowEffectsEnabled}
           onSetWindowEffectsEnabled={setWindowEffectsEnabledAndPersist}
         />
+      )}
+      </>
       )}
     </div>
   );
