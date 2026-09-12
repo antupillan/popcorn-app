@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Términos de Uso - Popcorn</title>
+    <style>
+        body {
+            background-color: #09090b;
+            color: #d4d4d8;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 760px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #ffffff;
+            font-size: 1.75rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            text-align: center;
+            border-bottom: 1px solid #27272a;
+            padding-bottom: 20px;
+        }
+        .version {
+            text-align: center;
+            font-size: 0.8rem;
+            opacity: 0.5;
+            margin-bottom: 40px;
+            letter-spacing: 0.02em;
+        }
+        h2 {
+            color: #ffffff;
+            font-size: 1rem;
+            font-weight: 600;
+            margin-top: 36px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        p {
+            margin-bottom: 16px;
+            font-size: 0.95rem;
+            opacity: 0.85;
+        }
+        ul {
+            list-style-type: none;
+            padding-left: 0;
+            margin-bottom: 16px;
+        }
+        li {
+            margin-bottom: 10px;
+            padding-left: 20px;
+            position: relative;
+            opacity: 0.85;
+            font-size: 0.95rem;
+        }
+        li::before {
+            content: "–";
+            color: #0284c7;
+            position: absolute;
+            left: 0;
+            top: 0;
+        }
+        .highlight {
+            color: #38bdf8;
+        }
+        a {
+            color: #38bdf8;
+            text-decoration: none;
+            border-bottom: 1px dotted #38bdf8;
+        }
+        a:hover {
+            color: #ffffff;
+            border-bottom: 1px solid #ffffff;
+        }
+        .back-link {
+            display: block;
+            margin-top: 60px;
+            text-align: center;
+            font-size: 0.8rem;
+        }
+        .warning-box {
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            background: rgba(245, 158, 11, 0.05);
+            padding: 16px 20px;
+            margin: 16px 0;
+            border-radius: 8px;
+        }
+        .warning-box ul {
+            margin-bottom: 0;
+        }
+        code {
+            background: #18181b;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.85em;
+        }
+        hr {
+            border: none;
+            border-top: 1px solid #27272a;
+            margin: 40px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Términos de Uso</h1>
+        <p class="version">Popcorn · Software libre bajo licencia AGPL-3.0-or-later</p>
+
+        <p>Estos Términos de Uso regulan la instalación y el uso de <strong>Popcorn</strong>, un centro de medios digitales audiovisuales para escritorio: reúne bajo una sola biblioteca contenido P2P (BitTorrent), canales de IPTV, un catálogo de YouTube organizado por temática y los archivos de la biblioteca local del usuario, con la posibilidad de organizarlos, reproducirlos y compartirlos. Popcorn no es un servicio en línea ni una plataforma que opere el equipo de desarrollo: no hay servidor central, no hay cuenta, no hay suscripción. Al instalar y usar el software, la persona usuaria declara haber leído y aceptado estos Términos. Si no está de acuerdo, no debe instalarlo ni usarlo.</p>
+
+        <h2>1. Aceptación</h2>
+        <p>La aceptación se produce al usar el software por primera vez, en la pantalla de bienvenida que se muestra antes de habilitar cualquier función. No hay registro, cuenta ni pago de por medio — no es un contrato de consumo en el sentido tradicional, sino los términos de uso de software libre.</p>
+
+        <h2>2. Qué es Popcorn (y qué no es)</h2>
+        <p>Popcorn es software que se ejecuta en la propia máquina del usuario: un centro de medios que integra, en una sola biblioteca, contenido P2P vía BitTorrent, canales de IPTV en vivo, un catálogo de YouTube por temática (cine, series, anime) y los archivos de la biblioteca local — con la posibilidad de organizar, reproducir y, en la capa social, compartir cualquiera de ellos. No hay un servidor central operado por el equipo de desarrollo: la biblioteca, los torrents y la configuración de cada usuario viven en su propio equipo.</p>
+        <p>Popcorn no está afiliado a archive.org, YouTube/Google, ningún proveedor de IPTV, ningún operador de relés Nostr, ni a qBittorrent, Transmission o cualquier indexer que el usuario decida agregar por su cuenta — cada uno de esos servicios es responsabilidad de quien lo opera, no del proyecto Popcorn.</p>
+        <p>El catálogo P2P por defecto incluye únicamente fuentes de licencia explícita (dominio público / Creative Commons), como archive.org. Popcorn nunca trae precargado ni recomienda ningún indexer de contenido con copyright.</p>
+
+        <h2>3. Sin servidor propio, sin cuenta, sin recolección de datos</h2>
+        <p>No se opera ningún servidor que reciba datos de uso, la biblioteca ni la actividad de quien usa el software. Cualquier identidad usada en la capa social (Nostr) se genera y guarda localmente en el equipo del usuario, es efímera por defecto, y los relés a los que se conecta los operan terceros o el propio usuario — el proyecto Popcorn no opera relés ni almacena mensajes de nadie.</p>
+
+        <h2>4. Motor de torrents y BitTorrent</h2>
+        <p>Popcorn es una app que ayuda a organizar y reproducir medios vía BitTorrent. Al descargar un torrent, los datos del usuario se ponen a disposición de otros participantes de la red mediante las subidas. Cualquier contenido compartido de esta forma queda bajo la responsabilidad de quien lo comparte.</p>
+        <p>Puede usarse el motor embebido (<code>librqbit</code>) o desacoplar la descarga hacia un cliente ya instalado por el usuario (qBittorrent/Transmission) — en ese modo Popcorn no descarga ningún byte, solo orquesta y muestra el estado.</p>
+
+        <h2>5. Fuentes agregadas por el usuario (indexers, IPTV, YouTube)</h2>
+        <p>Si el usuario agrega indexers de torrents propios (BYO — <em>bring your own</em>), listas de canales IPTV o canales de YouTube, es su propia decisión agregarlos, y es responsable de lo que busque, vea o descargue a través de ellos. Popcorn no cura, no verifica ni recomienda ninguna de esas fuentes en particular.</p>
+
+        <h2>6. Uso aceptable y conductas prohibidas</h2>
+        <p>Al usar el software, la persona usuaria se compromete a no:</p>
+        <ul>
+            <li>Usarlo para buscar, descargar, generar o compartir contenido de explotación sexual infantil (CSAM) o contenido sexual no consentido, sin excepción.</li>
+            <li>Usar el software para distribuir malware.</li>
+            <li>Usar la capa social (comunidades Nostr) para acosar, difamar o distribuir contenido ilegal bajo la legislación que le resulte aplicable.</li>
+        </ul>
+
+        <h2>7. Si se encontró contenido ilegal</h2>
+        <p>Este software no es un canal de denuncia ni tiene detección forense certificada de CSAM. Quien encuentre material de explotación infantil debe reportarlo directamente a:</p>
+        <div class="warning-box">
+            <ul>
+                <li><strong>NCMEC CyberTipline</strong> — <code>report.cybertip.org</code></li>
+                <li><strong>Red INHOPE</strong> (líneas de denuncia por país) — <code>inhope.org</code></li>
+                <li>Autoridades locales de la jurisdicción correspondiente.</li>
+            </ul>
+        </div>
+
+        <h2>8. Proveedores de inteligencia artificial</h2>
+        <p>Cualquier función de IA (búsqueda por lenguaje natural, candado de publicación, subtítulos, etc.) es agnóstica de proveedor: cada usuario elige su proveedor (o un modelo local sin clave) y usa su propia clave de API, guardada en el keychain de su sistema operativo. El proyecto Popcorn no opera ni cobra por ninguna llamada a un proveedor de IA — la relación contractual por ese costo es entre el usuario y el proveedor que elija.</p>
+        <p>Antes de publicar contenido a una comunidad, corre un candado de seguridad con esquema fijo (no editable), diseñado para bloquear la publicación (<em>fail-closed</em>) ante cualquier falla — sin red, sin clave configurada o respuesta mal formada — en vez de asumir que el contenido es seguro por defecto.</p>
+
+        <h2>9. Proxy / VPN</h2>
+        <p>Popcorn puede ofrecer proxy o VPN configurable por el usuario únicamente para alcanzar contenido ya legal en su origen que esté bloqueado por censura de un <strong>estado</strong>. Nunca se ofrece ni se promueve como mecanismo para sortear una restricción territorial <strong>comercial</strong> de un licenciante privado — eso sigue estando fuera del alcance de "catálogo legal por defecto".</p>
+
+        <h2>10. Comunidades y red social (Nostr)</h2>
+        <p>La capa social funciona sobre relés Nostr. La identidad de cada usuario se genera y guarda localmente (efímera por defecto, persistente solo si el usuario lo elige). Las comunidades se organizan bajo el protocolo NIP-72: quien crea una comunidad queda como su moderador inicial, y cualquier acción de moderación es pública y auditable — nadie puede tomar el control de un canal en silencio. No hay mensajes directos (DMs) en esta versión.</p>
+
+        <h2>11. Propiedad intelectual y licencia</h2>
+        <p>El software se distribuye bajo licencia <strong>AGPL-3.0-or-later</strong> — el archivo <code>LICENSE</code> del repositorio contiene el texto completo. El nombre "Popcorn" y los recursos visuales propios del proyecto no están cubiertos por esa licencia de código.</p>
+
+        <h2>12. Sin garantía y limitación de responsabilidad</h2>
+        <p>El software se ofrece "tal cual" y "según disponibilidad", sin garantía de ningún tipo, en la máxima medida permitida por la ley. El proyecto Popcorn no responde por el contenido, disponibilidad o comportamiento de servicios de terceros que el usuario elija conectar (indexers, listas IPTV, canales de YouTube, relés Nostr, clientes de torrent externos, proveedores de IA), ni por daños derivados de su uso.</p>
+
+        <h2>13. Menores de edad</h2>
+        <p>El software no está dirigido a menores de edad sin supervisión de un adulto responsable. Quien instala Popcorn en un equipo es responsable de su uso por parte de menores que tengan acceso a ese equipo.</p>
+
+        <h2>14. Cambios a estos Términos</h2>
+        <p>Estos Términos pueden actualizarse junto con nuevas versiones del software. Los cambios materiales se reflejan en la pantalla de bienvenida cuando corresponde, y siempre quedan disponibles en este documento dentro del repositorio.</p>
+
+        <h2>15. Ley aplicable</h2>
+        <p>Estos Términos se interpretan conforme a las leyes de la República de Chile, sin perjuicio de las normas de protección al consumidor u otras que resulten aplicables según la jurisdicción de cada usuario.</p>
+
+        <h2>16. Contacto</h2>
+        <p>Este es un proyecto de software libre sin una empresa operadora detrás. El canal de contacto es el propio repositorio: <a href="https://github.com/antupillan/popcorn-app">github.com/antupillan/popcorn-app</a> (issues).</p>
+
+        <a href="https://github.com/antupillan/popcorn-app" class="back-link">← Volver al repositorio</a>
+    </div>
+</body>
+</html>
