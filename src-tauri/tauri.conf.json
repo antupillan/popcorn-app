@@ -32,6 +32,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Samuel Paredes",
+    "homepage": "https://github.com/antupillan/popcorn-app",
+    "copyright": "Copyright © 2026 Samuel Paredes",
+    "category": "Video",
+    "shortDescription": "Cliente de medios P2P nativo",
+    "longDescription": "Cliente de medios P2P nativo (Tauri, motor BitTorrent embebido vía librqbit o desacoplable a qBittorrent/Transmission), con catálogo legal por defecto y comunidades vía relés Nostr.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

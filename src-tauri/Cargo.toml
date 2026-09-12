@@ -1,7 +1,7 @@
 [package]
 name = "popcorn-app"
 version = "0.1.0"
-description = "A Tauri App"
+description = "Cliente de medios P2P nativo, con motor BitTorrent embebido y catálogo legal por defecto"
 authors = ["Samuel Paredes"]
 edition = "2021"
 license = "AGPL-3.0-or-later"
