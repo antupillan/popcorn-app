@@ -1,5 +1,7 @@
 # Popcorn
 
+<img src="src-tauri/icons/128x128@2x.png" alt="Ícono de Popcorn" width="96" height="96">
+
 Centro de medios digitales audiovisuales para escritorio: un cliente P2P
 (BitTorrent) que además integra IPTV, un catálogo de YouTube organizado
 por temática, y tu propia biblioteca local — todo bajo una sola
