@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - MANUAL.md
+  workflow_dispatch: {}
 
 jobs:
   sync:
