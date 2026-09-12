@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { parseTorrentTags } from "../lib/torrentTags";
-import type { ArchiveOrgItem, Channel, IndexerResult, MediaItem, OnlineItem, TorrentHealth, YoutubeVideo } from "../types";
+import type { ArchiveOrgItem, Channel, Indexer, IndexerResult, MediaItem, OnlineItem, TorrentHealth, YoutubeVideo } from "../types";
+
+// Término neutro solo para confirmar que el indexer responde y su
+// plantilla es parseable — no es una búsqueda real del usuario, por eso
+// no importa si no matchea nada (un feed vacío pero bien formado ya
+// cuenta como "activo").
+const INDEXER_PING_QUERY = "a";
 
 type ResultKind = "media" | "channel" | "youtube" | "online";
 
@@ -29,7 +35,7 @@ type Tab = "todo" | "torrents" | "indexers" | "iptv" | "youtube";
 const TABS: { id: Tab; label: string }[] = [
   { id: "todo", label: "Todo" },
   { id: "torrents", label: "Torrents" },
-  { id: "indexers", label: "Mis Indexers" },
+  { id: "indexers", label: "Buscadores Torrents" },
   { id: "iptv", label: "IPTV" },
   { id: "youtube", label: "YouTube" },
 ];
@@ -81,21 +87,64 @@ export function SearchModal({ onClose, onPlayMedia, onPlayChannel, onPlayYoutube
     localStorage.setItem(AI_SEARCH_KEY, value ? "1" : "0");
   }
 
+  const [indexerList, setIndexerList] = useState<Indexer[] | null>(null);
+  const [indexerStatus, setIndexerStatus] = useState<Record<string, { ok: boolean; error?: string }>>({});
+
+  // Ping automático (a pedido del usuario: "un ping cuando se abre el
+  // buscador") disparado al entrar a la pestaña, no al abrir la lupa
+  // entera — así no le pega a indexers de terceros si el usuario ni
+  // pasa por esta pestaña. Corre una sola vez por apertura del modal
+  // (gateado por indexerList === null), nunca en loop/timer.
+  useEffect(() => {
+    if (tab !== "indexers" || indexerList !== null) return;
+    let ignore = false;
+    api.listIndexers().then((list) => {
+      if (ignore) return;
+      const enabled = list.filter((i) => i.enabled);
+      setIndexerList(enabled);
+      enabled.forEach((indexer) => {
+        api
+          .testIndexer(indexer, INDEXER_PING_QUERY)
+          .then(() => !ignore && setIndexerStatus((s) => ({ ...s, [indexer.id]: { ok: true } })))
+          .catch((e) => !ignore && setIndexerStatus((s) => ({ ...s, [indexer.id]: { ok: false, error: String(e) } })));
+      });
+    });
+    return () => {
+      ignore = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- indexerList
+    // se usa solo como guarda de "ya se disparó" (ver chequeo arriba); si
+    // entra a las deps, fijar la lista adentro del propio efecto lo vuelve
+    // a disparar, y el cleanup de esa segunda pasada invalida (`ignore`)
+    // los pings ya en vuelo antes de que resuelvan — quedaban pegados en
+    // gris para siempre (reportado en vivo).
+  }, [tab]);
+
   const [youtubeDeepResults, setYoutubeDeepResults] = useState<YoutubeVideo[] | null>(null);
   const [searchingYoutubeDeep, setSearchingYoutubeDeep] = useState(false);
 
   useEffect(() => {
     let ignore = false;
     setLoading(true);
-    Promise.all([api.listMediaItems(), api.listChannels(), api.listYoutubeVideos()])
-      .then(([m, c, v]) => {
+    Promise.all([api.listMediaItems(), api.listChannels()])
+      .then(([m, c]) => {
         if (ignore) return;
         setMediaItems(m);
         setChannels(c);
-        setVideos(v);
       })
       .catch((e) => !ignore && setError(String(e)))
       .finally(() => !ignore && setLoading(false));
+
+    // Aparte del resto: sin API key de YouTube configurada esto rechaza
+    // (esperable, no un error real) — antes vivía dentro del mismo
+    // Promise.all de arriba, así que ese rechazo tumbaba también la carga
+    // de Mi Colección/IPTV y dejaba el mensaje de YouTube pegado como
+    // banner global en todas las pestañas de la lupa, incluida "Mis
+    // Indexers" (reportado en vivo: "no hay donde buscar").
+    api
+      .listYoutubeVideos()
+      .then((v) => !ignore && setVideos(v))
+      .catch(() => {});
 
     // Catálogo Online (archive.org, Public Domain Torrents, etc.) — antes
     // vivía como filtro embebido en OnlineLibraryTab, trasladado acá para
@@ -358,7 +407,18 @@ export function SearchModal({ onClose, onPlayMedia, onPlayChannel, onPlayYoutube
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && tab === "todo" && searchWithAi()}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              // Antes solo "Todo" reaccionaba a Enter — el resto de
+              // pestañas exigía ir a buscar el botón con el mouse aunque
+              // ya tuvieran su propia acción de búsqueda en profundidad
+              // (reportado en vivo: "hay que apretar el botón, no basta
+              // con la tecla Enter").
+              if (tab === "todo") searchWithAi();
+              else if (tab === "torrents") searchArchiveOrgLive();
+              else if (tab === "indexers") searchMyIndexers();
+              else if (tab === "youtube") searchYoutubeDeep();
+            }}
             placeholder="Buscar…"
             className="flex-1 bg-transparent text-sm outline-none dark:text-zinc-100"
           />
@@ -505,6 +565,27 @@ export function SearchModal({ onClose, onPlayMedia, onPlayChannel, onPlayYoutube
 
           {!loading && tab === "indexers" && (
             <div className="flex flex-col gap-3">
+              {indexerList !== null && indexerList.length > 0 && (
+                <ul className="flex flex-col gap-1">
+                  {indexerList.map((indexer) => {
+                    const status = indexerStatus[indexer.id];
+                    return (
+                      <li key={indexer.id} className="flex items-center gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-300">
+                        <span
+                          className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                            !status ? "bg-zinc-400 animate-pulse" : status.ok ? "bg-emerald-500" : "bg-red-500"
+                          }`}
+                          title={status && !status.ok ? status.error : undefined}
+                        />
+                        <span className="truncate">{indexer.name}</span>
+                        {status && !status.ok && (
+                          <span className="truncate text-[10px] text-red-500">{status.error}</span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
               <div className="flex items-center gap-2">
                 <button
                   onClick={searchMyIndexers}
@@ -536,14 +617,20 @@ export function SearchModal({ onClose, onPlayMedia, onPlayChannel, onPlayYoutube
                       return (
                         <li
                           key={r.magnet}
-                          className="flex items-center justify-between gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-800"
+                          className="flex flex-col gap-1.5 rounded-lg border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-800"
                         >
                           <button
                             onClick={() => addIndexerResult(r)}
                             disabled={addingMagnet === r.magnet}
-                            className="flex min-w-0 flex-1 flex-col items-start gap-0.5 text-left disabled:opacity-50"
+                            className="flex w-full min-w-0 flex-col items-start gap-0.5 text-left disabled:opacity-50"
                           >
-                            <span className="min-w-0 truncate text-zinc-900 dark:text-zinc-100">{r.title}</span>
+                            {/* Título en su propia fila a lo ancho del modal — con
+                            títulos largos (típico en indexers como Nyaa) compartir
+                            fila con "Verificar salud"/"Agregar" (ver abajo) los dejaba
+                            pisados por el texto (reportado en vivo). */}
+                            <span className="w-full min-w-0 truncate text-zinc-900 dark:text-zinc-100">
+                              {r.title}
+                            </span>
                             {tags.length > 0 && (
                               <span className="flex flex-wrap gap-1">
                                 {tags.map((t) => (
@@ -565,19 +652,21 @@ export function SearchModal({ onClose, onPlayMedia, onPlayChannel, onPlayYoutube
                               <span className="text-[10px] text-zinc-400">salud: sin datos</span>
                             )}
                           </button>
-                          {!h && (
-                            <button
-                              onClick={() => checkIndexerHealth(r.magnet)}
-                              disabled={checkingHealthMagnet === r.magnet}
-                              title="Consulta tracker/DHT reales — puede tardar varios segundos"
-                              className="shrink-0 rounded-full border border-zinc-300 px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                            >
-                              {checkingHealthMagnet === r.magnet ? "Consultando…" : "Verificar salud"}
-                            </button>
-                          )}
-                          <span className="shrink-0 text-[10px] text-[var(--accent)] dark:text-[var(--accent-fg)]">
-                            {addingMagnet === r.magnet ? "Agregando…" : "Agregar"}
-                          </span>
+                          <div className="flex items-center justify-end gap-2">
+                            {!h && (
+                              <button
+                                onClick={() => checkIndexerHealth(r.magnet)}
+                                disabled={checkingHealthMagnet === r.magnet}
+                                title="Consulta tracker/DHT reales — puede tardar varios segundos"
+                                className="shrink-0 rounded-full border border-zinc-300 px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                              >
+                                {checkingHealthMagnet === r.magnet ? "Consultando…" : "Verificar salud"}
+                              </button>
+                            )}
+                            <span className="shrink-0 text-[10px] text-[var(--accent)] dark:text-[var(--accent-fg)]">
+                              {addingMagnet === r.magnet ? "Agregando…" : "Agregar"}
+                            </span>
+                          </div>
                         </li>
                       );
                     })}
