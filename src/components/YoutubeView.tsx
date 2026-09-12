@@ -55,20 +55,32 @@ function VideosTab({ onPlayVideo }: YoutubeViewProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("todos");
+  const [retryCount, setRetryCount] = useState(0);
 
+  // Sin retry manual, un fallo por falta de API key quedaba pegado en
+  // pantalla para siempre — la única forma de reintentar era cerrar y
+  // reabrir la pestaña YouTube completa (remonta el componente), algo
+  // no obvio si el usuario configuró la key en Ajustes con esta pestaña
+  // ya abierta detrás (reportado en vivo).
   useEffect(() => {
+    let ignore = false;
     setLoading(true);
+    setError(null);
     api
       .listYoutubeVideos()
       .then((fast) => {
+        if (ignore) return;
         setVideos(fast);
         // Curación en segundo plano, nunca antes del render rápido — mismo
         // criterio que ChannelsTab/OnlineLibraryTab.
-        api.curateYoutubeVideos(fast).then(setVideos).catch(() => {});
+        api.curateYoutubeVideos(fast).then((c) => !ignore && setVideos(c)).catch(() => {});
       })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
-  }, []);
+      .catch((e) => !ignore && setError(String(e)))
+      .finally(() => !ignore && setLoading(false));
+    return () => {
+      ignore = true;
+    };
+  }, [retryCount]);
 
   const filtered = categoryFilter === "todos" ? videos : videos.filter((v) => v.category === categoryFilter);
 
@@ -76,7 +88,17 @@ function VideosTab({ onPlayVideo }: YoutubeViewProps) {
     return <p className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">Cargando videos…</p>;
   }
   if (error) {
-    return <p className="p-6 text-center text-xs text-red-500">{error}</p>;
+    return (
+      <div className="flex flex-col items-center gap-2 p-6 text-center">
+        <p className="text-xs text-red-500">{error}</p>
+        <button
+          onClick={() => setRetryCount((n) => n + 1)}
+          className="rounded-md border border-zinc-300 px-2.5 py-1 text-[11px] font-medium text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+        >
+          Reintentar
+        </button>
+      </div>
+    );
   }
 
   return (
