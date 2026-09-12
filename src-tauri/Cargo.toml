@@ -1,6 +1,6 @@
 [package]
 name = "popcorn-app"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cliente de medios P2P nativo, con motor BitTorrent embebido y catálogo legal por defecto"
 authors = ["Samuel Paredes"]
 edition = "2021"
