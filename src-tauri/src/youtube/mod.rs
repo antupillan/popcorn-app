@@ -44,7 +44,7 @@ pub struct YoutubeVideo {
 }
 
 fn valid_category(category: &str) -> bool {
-    matches!(category, "cine" | "series" | "anime")
+    matches!(category, "cine" | "series" | "anime" | "musica")
 }
 
 fn row_to_source(row: &rusqlite::Row) -> rusqlite::Result<YoutubeSource> {
@@ -105,7 +105,7 @@ pub async fn add_youtube_source(
     category: String,
 ) -> Result<YoutubeSource, String> {
     if !valid_category(&category) {
-        return Err(format!("categoría inválida: {category} (debe ser cine, series o anime)"));
+        return Err(format!("categoría inválida: {category} (debe ser cine, series, anime o musica)"));
     }
     let api_key = keychain::get_secret(API_KEY_ID)
         .map_err(|e| e.to_string())?

@@ -71,7 +71,7 @@ export interface YoutubeSource {
   name: string;
   channel_url: string;
   channel_id: string | null;
-  category: "cine" | "series" | "anime";
+  category: "cine" | "series" | "anime" | "musica";
   enabled: boolean;
 }
 
@@ -81,7 +81,7 @@ export interface YoutubeVideo {
   published_at: string;
   thumbnail_url: string | null;
   source_id: string;
-  category: "cine" | "series" | "anime";
+  category: "cine" | "series" | "anime" | "musica";
 }
 
 export interface RecordingInfo {

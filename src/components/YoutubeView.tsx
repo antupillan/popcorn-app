@@ -9,13 +9,14 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "sources", label: "Fuentes" },
 ];
 
-type CategoryFilter = "todos" | "cine" | "series" | "anime";
+type CategoryFilter = "todos" | "cine" | "series" | "anime" | "musica";
 
 const CATEGORY_FILTERS: { id: CategoryFilter; label: string }[] = [
   { id: "todos", label: "Todos" },
   { id: "cine", label: "Cine" },
   { id: "series", label: "Series" },
   { id: "anime", label: "Anime" },
+  { id: "musica", label: "Música" },
 ];
 
 interface YoutubeViewProps {

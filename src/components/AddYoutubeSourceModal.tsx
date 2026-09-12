@@ -6,10 +6,11 @@ interface AddYoutubeSourceModalBodyProps {
   onAdded: () => void;
 }
 
-const CATEGORIES: { id: "cine" | "series" | "anime"; label: string }[] = [
+const CATEGORIES: { id: "cine" | "series" | "anime" | "musica"; label: string }[] = [
   { id: "cine", label: "Cine" },
   { id: "series", label: "Series" },
   { id: "anime", label: "Anime" },
+  { id: "musica", label: "Música" },
 ];
 
 // El canal es tuyo — mismo blindaje legal que indexers/IPTV (BYO, sin
@@ -22,7 +23,7 @@ const CATEGORIES: { id: "cine" | "series" | "anime"; label: string }[] = [
 export function AddYoutubeSourceModalBody({ onClose, onAdded }: AddYoutubeSourceModalBodyProps) {
   const [name, setName] = useState("");
   const [channelUrl, setChannelUrl] = useState("");
-  const [category, setCategory] = useState<"cine" | "series" | "anime">("anime");
+  const [category, setCategory] = useState<"cine" | "series" | "anime" | "musica">("anime");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
