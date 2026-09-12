@@ -1,0 +1,86 @@
+name: Release
+
+# Mandato de Despliegue Soberano (CLAUDE.md): tag de versión -> Actions ->
+# tauri-action construye multiplataforma -> publicación en GitHub
+# Releases. No hay firma de código todavía (sin certificados) — los
+# instaladores salen sin firmar hasta que se agregue ese paso; es normal
+# para una primera release y no bloquea instalarlos manualmente.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # universal-apple-darwin cubre Intel + Apple Silicon en un solo
+          # binario, evita duplicar el job para cada arquitectura de Mac.
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+          # 22.04, no "latest": Tauri linkea contra webkit2gtk/glibc del
+          # runner — usar la versión más nueva reduce la compatibilidad
+          # hacia atrás del binario resultante (recomendación oficial de
+          # Tauri, no una preferencia arbitraria).
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: windows-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar dependencias de sistema (solo Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: Instalar Rust estable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache de Cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Instalar dependencias del frontend
+        run: npm ci
+
+      - name: Build y publicación
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Popcorn ${{ github.ref_name }}"
+          releaseBody: "Ver el historial de commits para el detalle de esta versión."
+          # Draft a propósito: revisión manual de los artefactos antes de
+          # publicar de verdad, ver Mandato de Despliegue Soberano.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
