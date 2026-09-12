@@ -1288,6 +1288,16 @@ function HelpLink({ href, children }: { href: string; children: ReactNode }) {
 function AyudaTab() {
   return (
     <div className="flex flex-col gap-2 p-4 pt-0">
+      <HelpTopicCard title="Manual de usuario">
+        <p>
+          Guía completa de cada pantalla de la app:{" "}
+          <HelpLink href="https://github.com/antupillan/popcorn-app/wiki">
+            github.com/antupillan/popcorn-app/wiki
+          </HelpLink>
+          .
+        </p>
+      </HelpTopicCard>
+
       <HelpTopicCard title="Conseguir una YouTube Data API key">
         <p>Necesaria para agregar y listar canales de YouTube. Se obtiene gratis:</p>
         <ol className="list-decimal space-y-1 pl-4">

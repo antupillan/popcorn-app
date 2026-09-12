@@ -1,0 +1,38 @@
+name: Sync wiki
+
+# MANUAL.md en el repo es la fuente de verdad (se edita en el mismo
+# commit/PR que el feature que documenta, ver Mandato de Manual de
+# Usuario en CLAUDE.md) — este workflow lo empuja a la Wiki como Home.md
+# cada vez que cambia, sin que haya que tocar la Wiki a mano.
+on:
+  push:
+    branches: [main]
+    paths:
+      - MANUAL.md
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publicar MANUAL.md como Home de la Wiki
+        env:
+          # GITHUB_TOKEN no tiene permiso sobre el repo .wiki.git (es un
+          # repo separado) — hace falta un PAT classic con scope `repo`,
+          # guardado como secret del repo.
+          WIKI_SYNC_TOKEN: ${{ secrets.WIKI_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git clone "https://x-access-token:${WIKI_SYNC_TOKEN}@github.com/${{ github.repository }}.wiki.git" wiki
+          cp MANUAL.md wiki/Home.md
+          cd wiki
+          git add Home.md
+          if git diff --cached --quiet; then
+            echo "sin cambios reales, nada que pushear"
+            exit 0
+          fi
+          git commit -m "Sync Home.md from MANUAL.md (${{ github.sha }})"
+          git push
