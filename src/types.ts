@@ -132,6 +132,16 @@ export interface IndexerResult {
   source_indexer: string;
 }
 
+export interface IndexerFailure {
+  indexer_name: string;
+  message: string;
+}
+
+export interface SearchIndexersResponse {
+  results: IndexerResult[];
+  errors: IndexerFailure[];
+}
+
 export interface TorrentHealth {
   peers_found: number | null;
   source: "tracker" | "dht" | "sin datos";

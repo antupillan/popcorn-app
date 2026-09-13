@@ -13,6 +13,7 @@ import type {
   RecordingInfo,
   OpenSubtitlesResult,
   ScoredCandidate,
+  SearchIndexersResponse,
   SourceSettings,
   SpeedLimits,
   Subtitle,
@@ -224,8 +225,8 @@ export const api = {
   // Busca contra todos los indexers habilitados y fusiona resultados ya
   // curados (curation_enabled por indexer, ver source_settings) — a
   // diferencia de testIndexer, que valida uno solo al configurarlo.
-  searchIndexers: (query: string) => invoke<IndexerResult[]>("search_indexers", { query }),
-  searchIndexersWithAi: (query: string) => invoke<IndexerResult[]>("search_indexers_with_ai", { query }),
+  searchIndexers: (query: string) => invoke<SearchIndexersResponse>("search_indexers", { query }),
+  searchIndexersWithAi: (query: string) => invoke<SearchIndexersResponse>("search_indexers_with_ai", { query }),
 
   // Opt-in, nunca automático (a diferencia de la curación IA) — consulta
   // tracker UDP + DHT reales, más lento que el `seeders` que ya trae el

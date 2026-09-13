@@ -270,7 +270,15 @@ export function SearchModal({ onClose, onPlayMedia, onPlayChannel, onPlayYoutube
     setSearchingIndexers(true);
     setError(null);
     try {
-      setIndexerResults(aiSearch ? await api.searchIndexersWithAi(query) : await api.searchIndexers(query));
+      const response = aiSearch ? await api.searchIndexersWithAi(query) : await api.searchIndexers(query);
+      setIndexerResults(response.results);
+      // Fallo parcial (algunos buscadores respondieron, otros no) — se
+      // muestra como advertencia, no reemplaza los resultados que sí
+      // llegaron. Antes esto solo se logeaba en la consola de `tauri dev`,
+      // invisible en un binario empaquetado (ver Planes_mejora_popcorn/busqueda_global.txt).
+      if (response.errors.length > 0) {
+        setError(response.errors.map((e) => `${e.indexer_name}: ${e.message}`).join(" · "));
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -396,7 +404,7 @@ export function SearchModal({ onClose, onPlayMedia, onPlayChannel, onPlayYoutube
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[80vh] w-full max-w-lg flex-col rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-900"
+        className="flex max-h-[80vh] w-full max-w-lg flex-col rounded-xl border border-zinc-200/50 bg-white/80 shadow-xl backdrop-blur-xl dark:border-zinc-800/50 dark:bg-zinc-900/80"
       >
         <div className="flex items-center gap-2 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 shrink-0 text-zinc-400">
@@ -592,7 +600,7 @@ export function SearchModal({ onClose, onPlayMedia, onPlayChannel, onPlayYoutube
                   disabled={searchingIndexers || !query.trim()}
                   className="rounded-md border border-[var(--accent)] px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white disabled:opacity-50 dark:text-[var(--accent-fg)]"
                 >
-                  {searchingIndexers ? (aiSearch ? "Buscando con IA…" : "Buscando…") : "Buscar en mis indexers"}
+                  {searchingIndexers ? (aiSearch ? "Buscando con IA…" : "Buscando…") : "Buscar"}
                 </button>
                 <span className="text-[10px] text-zinc-500 dark:text-zinc-400">
                   Popcorn no trae ninguno precargado — configúralos en Ajustes → Indexers.
@@ -663,9 +671,13 @@ export function SearchModal({ onClose, onPlayMedia, onPlayChannel, onPlayYoutube
                                 {checkingHealthMagnet === r.magnet ? "Consultando…" : "Verificar salud"}
                               </button>
                             )}
-                            <span className="shrink-0 text-[10px] text-[var(--accent)] dark:text-[var(--accent-fg)]">
+                            <button
+                              onClick={() => addIndexerResult(r)}
+                              disabled={addingMagnet === r.magnet}
+                              className="shrink-0 text-[10px] font-semibold text-[var(--accent)] hover:underline disabled:opacity-50 dark:text-[var(--accent-fg)]"
+                            >
                               {addingMagnet === r.magnet ? "Agregando…" : "Agregar"}
-                            </span>
+                            </button>
                           </div>
                         </li>
                       );

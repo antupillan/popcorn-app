@@ -39,6 +39,22 @@ pub struct IndexerResult {
     pub source_indexer: String,
 }
 
+/// Antes estos errores solo se logeaban con `eprintln!` (visible en la
+/// consola de `tauri dev`, invisible para el usuario real de un binario
+/// empaquetado) — un indexer que empieza a fallar quedaba silenciosamente
+/// devolviendo menos resultados sin que nadie se enterara del motivo.
+#[derive(Serialize, Clone)]
+pub struct IndexerFailure {
+    pub indexer_name: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct SearchIndexersResponse {
+    pub results: Vec<IndexerResult>,
+    pub errors: Vec<IndexerFailure>,
+}
+
 fn row_to_indexer(row: &rusqlite::Row) -> rusqlite::Result<Indexer> {
     let json_paths_raw: Option<String> = row.get(4)?;
     Ok(Indexer {
@@ -166,21 +182,31 @@ fn enabled_indexers(db: &Db) -> Result<Vec<Indexer>, String> {
 /// pedido. Buscar "más amplio" con IA es una acción aparte y explícita
 /// (ver `search_indexers_with_ai`), no algo que la búsqueda cruda haga
 /// por su cuenta.
+/// Separada del comando para poder testear sin `State` (mismo patrón que
+/// `search_indexers_with_ai_inner`, ver abajo).
+async fn search_indexers_inner(http: &reqwest::Client, enabled: &[Indexer], query: &str) -> SearchIndexersResponse {
+    let mut all = Vec::new();
+    let mut errors = Vec::new();
+    for indexer in enabled {
+        match search_one(http, indexer, query).await {
+            Ok(mut results) => all.append(&mut results),
+            Err(e) => {
+                eprintln!("[popcorn] indexer '{}' falló: {e}", indexer.name);
+                errors.push(IndexerFailure { indexer_name: indexer.name.clone(), message: e.to_string() });
+            }
+        }
+    }
+    SearchIndexersResponse { results: all, errors }
+}
+
 #[tauri::command]
 pub async fn search_indexers(
     http: State<'_, crate::commands::HttpClient>,
     db: State<'_, Db>,
     query: String,
-) -> Result<Vec<IndexerResult>, String> {
+) -> Result<SearchIndexersResponse, String> {
     let enabled = enabled_indexers(&db)?;
-    let mut all = Vec::new();
-    for indexer in &enabled {
-        match search_one(&http.0, indexer, &query).await {
-            Ok(mut results) => all.append(&mut results),
-            Err(e) => eprintln!("[popcorn] indexer '{}' falló: {e}", indexer.name),
-        }
-    }
-    Ok(all)
+    Ok(search_indexers_inner(&http.0, &enabled, &query).await)
 }
 
 /// Separado del comando para poder testear sin `State` (mismo patrón que
@@ -195,7 +221,7 @@ async fn search_indexers_with_ai_inner(
     provider: Option<&dyn AiProvider>,
     enabled: &[Indexer],
     query: &str,
-) -> Result<Vec<IndexerResult>, String> {
+) -> Result<SearchIndexersResponse, String> {
     let provider = provider
         .ok_or_else(|| "no hay ningún proveedor de IA activo — configura uno en Ajustes".to_string())?;
     let broadened = provider.broaden_query(query).await.map_err(|e| format!("[{}] {e}", provider.name()))?;
@@ -209,6 +235,7 @@ async fn search_indexers_with_ai_inner(
 
     let mut seen = std::collections::HashSet::new();
     let mut all = Vec::new();
+    let mut errors = Vec::new();
     for indexer in enabled {
         for term in &terms {
             match search_one(http, indexer, term).await {
@@ -219,11 +246,14 @@ async fn search_indexers_with_ai_inner(
                         }
                     }
                 }
-                Err(e) => eprintln!("[popcorn] indexer '{}' falló (término '{term}'): {e}", indexer.name),
+                Err(e) => {
+                    eprintln!("[popcorn] indexer '{}' falló (término '{term}'): {e}", indexer.name);
+                    errors.push(IndexerFailure { indexer_name: indexer.name.clone(), message: format!("{e} (término '{term}')") });
+                }
             }
         }
     }
-    Ok(all)
+    Ok(SearchIndexersResponse { results: all, errors })
 }
 
 #[tauri::command]
@@ -231,7 +261,7 @@ pub async fn search_indexers_with_ai(
     http: State<'_, crate::commands::HttpClient>,
     db: State<'_, Db>,
     query: String,
-) -> Result<Vec<IndexerResult>, String> {
+) -> Result<SearchIndexersResponse, String> {
     let enabled = enabled_indexers(&db)?;
     let provider = try_build_active_provider(&db)?;
     search_indexers_with_ai_inner(&http.0, provider.as_deref(), &enabled, &query).await
@@ -339,6 +369,53 @@ mod tests {
         let result = search_indexers_with_ai_inner(&client, Some(&FakeProvider), &[], "one piece")
             .await
             .expect("con proveedor activo, sin indexers habilitados no debe fallar");
-        assert!(result.is_empty(), "sin indexers habilitados no hay dónde buscar los términos ampliados");
+        assert!(result.results.is_empty(), "sin indexers habilitados no hay dónde buscar los términos ampliados");
+        assert!(result.errors.is_empty(), "sin indexers habilitados no hay ningún indexer que pueda fallar");
+    }
+
+    /// Regresión del bug real: antes, un indexer caído solo dejaba un
+    /// `eprintln!` en la consola de `tauri dev` — invisible en un binario
+    /// empaquetado, el usuario solo veía "menos resultados" sin saber por
+    /// qué. Confirma que ahora el fallo llega estructurado en `errors` sin
+    /// descartar los resultados de los indexers que sí respondieron.
+    #[tokio::test]
+    async fn search_indexers_inner_surfaces_one_indexer_failure_without_dropping_the_others_results() {
+        use axum::{routing::get, Router};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().route(
+            "/search",
+            get(|| async { "magnet:?xt=urn:btih:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&dn=Test+Item" }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let healthy = Indexer {
+            id: "ok".to_string(),
+            name: "Indexer sano".to_string(),
+            search_url_template: format!("http://127.0.0.1:{port}/search?q={{query}}"),
+            result_format: "magnet_list".to_string(),
+            json_paths: None,
+            enabled: true,
+        };
+        let broken = Indexer {
+            id: "broken".to_string(),
+            name: "Indexer caído".to_string(),
+            search_url_template: "http://127.0.0.1:1/search?q={query}".to_string(), // puerto sin listener
+            result_format: "magnet_list".to_string(),
+            json_paths: None,
+            enabled: true,
+        };
+
+        let client = reqwest::Client::new();
+        let result = search_indexers_inner(&client, &[healthy, broken], "one piece").await;
+
+        assert_eq!(result.results.len(), 1, "el indexer sano debe seguir devolviendo su resultado");
+        assert_eq!(result.results[0].source_indexer, "Indexer sano");
+        assert_eq!(result.errors.len(), 1, "el indexer caído debe reportar exactamente un fallo");
+        assert_eq!(result.errors[0].indexer_name, "Indexer caído");
+        assert!(!result.errors[0].message.is_empty());
     }
 }
