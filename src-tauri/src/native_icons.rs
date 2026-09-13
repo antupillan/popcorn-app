@@ -1,10 +1,16 @@
-// Íconos reales de window-close/minimize/maximize/restore del tema de
-// íconos activo del usuario (Breeze, Adwaita, etc.), vía los nombres
-// estándar del freedesktop icon-naming-spec. Solo Linux: Windows/macOS no
-// tienen un tema de íconos consultable así (Fluent/mac usan glifos del
-// sistema, no archivos en disco) — HashMap vacío en cualquier otro caso,
-// el frontend cae a los glifos dibujados a mano (TitleBar.tsx), nunca se
-// rompe por esto.
+// Íconos reales de window-close/minimize/maximize/restore, con dos tiers
+// en Linux: (1) decoración de ventana Aurorae real si está activa (ver
+// aurorae_icons.rs — esto es lo que el usuario realmente ve dibujado como
+// botones de su ventana, cuando la decoración es de ese tipo), (2) tema
+// de íconos activo del usuario (Breeze, Adwaita, etc.) vía los nombres
+// estándar del freedesktop icon-naming-spec — un ícono de acciones
+// genérico, no necesariamente igual a la decoración real si esta es un
+// plugin compilado (Breeze/Lightly/Klassy: sin ningún archivo que leer,
+// ver registro fechado en Planes_mejora_popcorn/set_iconos_lucide.txt).
+// Solo Linux: Windows/macOS no tienen nada de esto consultable así
+// (Fluent/mac usan glifos del sistema, no archivos en disco) — HashMap
+// vacío en cualquier otro caso, el frontend cae a los glifos dibujados a
+// mano (TitleBar.tsx), nunca se rompe por esto.
 //
 // El nombre del tema se lee del portal freedesktop (org.gnome.desktop.
 // interface, icon-theme) — mismo mecanismo que os_accent.rs, NO de
@@ -34,9 +40,18 @@ async fn linux_icons(app: &tauri::AppHandle) -> std::collections::HashMap<String
         ("maximize", "window-maximize-symbolic"),
         ("restore", "window-restore-symbolic"),
     ];
+    // Tier 1: decoración de ventana Aurorae real (KWin), si la decoración
+    // activa es de ese tipo — ver aurorae_icons.rs. `out` arranca con lo
+    // que este tier resuelva; el tema de íconos GTK de abajo solo llena
+    // las claves que falten (nunca pisa un ícono de decoración real con
+    // uno de tema de íconos genérico).
+    let mut out = crate::aurorae_icons::resolve_all().unwrap_or_default();
+
     let theme_name = current_icon_theme_name().await;
-    let mut out = std::collections::HashMap::new();
     for (key, icon_name) in NAMES {
+        if out.contains_key(key) {
+            continue;
+        }
         if let Some(data_uri) = lookup_icon_data_uri(app, theme_name.as_deref(), icon_name) {
             out.insert(key.to_string(), data_uri);
         }

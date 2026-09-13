@@ -129,6 +129,14 @@ ashpd = { version = "0.13", features = ["settings"] }
 # GTK3 que usa webkit2gtk), se suma directa por el mismo criterio que
 # librqbit-core arriba: cero riesgo nuevo de versión.
 gtk = "0.18"
+# Parsea los SVG de temas de decoración Aurorae (aurorae_icons.rs) para
+# extraer el grupo de un estado puntual (`id="active-center"`) sin
+# necesitar un motor de render/rasterizado completo (usvg/resvg serían
+# mucho más pesados para esto). Pure-Rust, solo lectura (no reserializa —
+# aurorae_icons.rs reconstruye el `<g>` a mano). No se pudo confirmar el
+# conteo de descargas en crates.io en esta sesión (sin acceso de red desde
+# este entorno) — verificar antes de fijar la versión en un release real.
+roxmltree = "0.20"
 
 [dev-dependencies]
 # Solo para construir fixtures de .torrent reales en tests (armar la

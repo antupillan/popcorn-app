@@ -1,5 +1,10 @@
 mod ai;
 mod app_settings;
+// Solo Linux: parsea temas de decoración Aurorae (KWin), depende de
+// `roxmltree` que solo se agrega como dependencia en ese target (ver
+// Cargo.toml) — no tiene sentido en Windows/macOS (native_icons.rs).
+#[cfg(target_os = "linux")]
+mod aurorae_icons;
 mod availability_ping;
 mod commands;
 mod db;
