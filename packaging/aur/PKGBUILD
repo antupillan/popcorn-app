@@ -1,0 +1,29 @@
+# Maintainer: Samuel Paredes <168942727+antupillan@users.noreply.github.com>
+pkgname=popcorn-app-bin
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Cliente de medios P2P nativo (Tauri): torrents, IPTV, YouTube y biblioteca local en una sola app"
+arch=('x86_64')
+url="https://github.com/antupillan/popcorn-app"
+license=('AGPL-3.0-or-later')
+depends=('webkit2gtk-4.1' 'gtk3')
+provides=('popcorn-app')
+conflicts=('popcorn-app')
+source=(
+	"popcorn-app_${pkgver}_amd64.deb::https://github.com/antupillan/popcorn-app/releases/download/v${pkgver}/popcorn-app_${pkgver}_amd64.deb"
+	"LICENSE::https://raw.githubusercontent.com/antupillan/popcorn-app/v${pkgver}/LICENSE"
+)
+sha256sums=(
+	'7e0e7f6f08e598a589928ad612b690f96c8062374cae46e0876363d6b19d2980'
+	'0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0'
+)
+
+package() {
+	# El .deb es un archivo ar (debian-binary + control.tar.gz +
+	# data.tar.gz) — makepkg no lo auto-extrae por la extensión, hay que
+	# sacar data.tar.gz a mano y recién ahí extraer el árbol real.
+	bsdtar -xf "popcorn-app_${pkgver}_amd64.deb" data.tar.gz
+	bsdtar -xf data.tar.gz -C "$pkgdir"
+
+	install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
