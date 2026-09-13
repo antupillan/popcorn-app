@@ -4,7 +4,16 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
+    <!-- Intento de arreglar YouTube "Error 153: embedder.identity.missing.referrer"
+    (el origen real de Popcorn es tauri://localhost, no http/https) —
+    confirmado en vivo que esto NO alcanza: WebKitGTK sigue sin mandar
+    Referer en el iframe con esto puesto. La causa real es que no existe
+    URL http(s) de la que derivar un Referer mientras el origen no cambie
+    (ver Planes_mejora_popcorn/plan_desacople_frontend_backend.txt,
+    sección [2026-09-13]) — se deja la meta igual por ser una buena
+    práctica de privacidad general, no porque resuelva el bug. -->
+    <meta name="referrer" content="origin" />
+    <title>Popcorn</title>
   </head>
 
   <body>

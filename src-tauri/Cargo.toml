@@ -26,7 +26,12 @@ tauri-build = { version = "2", features = [] }
 # "macos-private-api" es exigido por build.rs (tauri_build::build valida,
 # no agrega solo) porque tauri.conf.json tiene app.macOSPrivateApi:true
 # (requisito de Tauri para que "transparent" funcione en macOS).
-tauri = { version = "2", features = ["image-png", "macos-private-api"] }
+# "devtools" habilita clic derecho -> Inspeccionar en builds de release
+# (por defecto Tauri lo apaga en release para no exponer la consola a
+# usuarios finales) — necesario para depurar en vivo qué pasa dentro del
+# iframe de YouTube (error 153), reconsiderar si se deja para el release
+# público final o se saca antes de publicar en AUR.
+tauri = { version = "2", features = ["image-png", "macos-private-api", "devtools"] }
 tauri-plugin-opener = "2"
 # Primer plugin nuevo desde el setup inicial (ver Mandato de sincronización
 # de empaquetado) — selector nativo de carpeta para la biblioteca Local.

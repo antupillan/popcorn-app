@@ -503,6 +503,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
               className="h-full w-full"
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
               allowFullScreen
+              // Intento de arreglar "Error 153: embedder.identity.missing.referrer"
+              // — confirmado en vivo que NO alcanza (WebKitGTK sigue sin
+              // mandar Referer con esto puesto; el origen real de Popcorn
+              // es tauri://localhost, no hay URL http(s) de la que derivar
+              // uno). Arreglo real pendiente: mover el origen de la app a
+              // un servidor HTTP local, ver
+              // Planes_mejora_popcorn/plan_desacople_frontend_backend.txt
+              // sección [2026-09-13]. Se deja puesto por si algún día
+              // alcanza (no estorba), no representa un fix confirmado.
+              referrerPolicy="origin"
             />
           )}
           {url && kind !== "youtube" && (
