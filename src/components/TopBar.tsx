@@ -1,3 +1,4 @@
+import { Search } from "lucide-react";
 import type { Theme } from "../App";
 import type { TorrentInfo } from "../types";
 
@@ -83,10 +84,7 @@ export function TopBar({
           title="Buscar en lo agregado"
           className="flex items-center rounded-lg p-2 text-zinc-500 transition-colors hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
-            <circle cx="11" cy="11" r="7" />
-            <path d="m21 21-4.3-4.3" />
-          </svg>
+          <Search className="h-3.5 w-3.5" />
         </button>
 
         <button

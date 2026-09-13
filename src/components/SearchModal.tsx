@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import { api } from "../lib/api";
 import { parseTorrentTags } from "../lib/torrentTags";
 import type { ArchiveOrgItem, Channel, Indexer, IndexerResult, MediaItem, OnlineItem, TorrentHealth, YoutubeVideo } from "../types";
@@ -407,10 +408,7 @@ export function SearchModal({ onClose, onPlayMedia, onPlayChannel, onPlayYoutube
         className="flex max-h-[80vh] w-full max-w-lg flex-col rounded-xl border border-zinc-200/50 bg-white/80 shadow-xl backdrop-blur-xl dark:border-zinc-800/50 dark:bg-zinc-900/80"
       >
         <div className="flex items-center gap-2 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 shrink-0 text-zinc-400">
-            <circle cx="11" cy="11" r="7" />
-            <path d="m21 21-4.3-4.3" />
-          </svg>
+          <Search className="h-4 w-4 shrink-0 text-zinc-400" />
           <input
             autoFocus
             value={query}
