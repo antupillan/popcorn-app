@@ -344,7 +344,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
                   >
                   <div
                     onClick={(e) => e.stopPropagation()}
-                    className="flex max-h-[70vh] w-72 flex-col overflow-hidden rounded-md border border-zinc-700 bg-zinc-900 text-xs shadow-xl"
+                    className="flex max-h-[70vh] w-72 flex-col overflow-hidden rounded-md border border-zinc-700/50 bg-zinc-900/80 text-xs shadow-xl backdrop-blur-xl"
                   >
                     <div className="flex items-center justify-between border-b border-zinc-700 px-2 py-1.5">
                       <h3 className="text-[11px] font-semibold text-zinc-200">Subtítulos</h3>

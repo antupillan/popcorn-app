@@ -10,7 +10,7 @@ interface SeedRatioDialogProps {
 export function SeedRatioDialog({ torrentName, onKeep, onRemove }: SeedRatioDialogProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-sm rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="w-full max-w-sm rounded-xl border border-zinc-200/50 bg-white/80 p-5 shadow-2xl backdrop-blur-xl dark:border-zinc-800/50 dark:bg-zinc-900/80">
         <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Sembrado 1:1 completo</h2>
         <p className="mt-1.5 truncate text-xs text-zinc-500 dark:text-zinc-400">{torrentName}</p>
         <p className="mt-2 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
