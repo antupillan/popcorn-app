@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { X } from "lucide-react";
 import { TorrentList } from "./TorrentList";
 import type { MediaItem, TorrentInfo } from "../types";
 
@@ -42,9 +43,7 @@ export function TorrentsFlyout({ torrents, onChanged, onClose, mediaItems, onPla
             onClick={onClose}
             className="rounded-md p-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
+            <X className="h-4 w-4" />
           </button>
         </div>
         <div className="overflow-y-auto">

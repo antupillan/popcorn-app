@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { X } from "lucide-react";
 import { api } from "../lib/api";
 import type { AiProviderConfig, Indexer, IndexerResult, TorrentEngineConfig } from "../types";
 import type { TitleBarOrder, TitleBarSide } from "../App";
@@ -91,9 +92,7 @@ export function Ajustes({
         <div className="flex items-center justify-between border-b border-zinc-200/50 px-4 py-3 dark:border-zinc-800/50">
           <h2 className="text-sm font-semibold text-zinc-900 dark:text-white">Ajustes</h2>
           <button onClick={onClose} className="rounded-md p-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
+            <X className="h-4 w-4" />
           </button>
         </div>
 

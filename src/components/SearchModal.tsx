@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { api } from "../lib/api";
 import { parseTorrentTags } from "../lib/torrentTags";
 import type { ArchiveOrgItem, Channel, Indexer, IndexerResult, MediaItem, OnlineItem, TorrentHealth, YoutubeVideo } from "../types";
@@ -429,9 +429,7 @@ export function SearchModal({ onClose, onPlayMedia, onPlayChannel, onPlayYoutube
             className="flex-1 bg-transparent text-sm outline-none dark:text-zinc-100"
           />
           <button onClick={onClose} className="shrink-0 rounded-md p-1.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
+            <X className="h-4 w-4" />
           </button>
         </div>
 

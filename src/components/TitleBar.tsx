@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Window } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { X } from "lucide-react";
 import type { TitleBarOrder, TitleBarSide } from "../App";
 import { api } from "../lib/api";
 
@@ -194,9 +195,7 @@ function WindowControls({
       <Glyph
         dataUri={nativeIcons.close}
         fallback={
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5">
-            <path d="M18 6 6 18M6 6l12 12" />
-          </svg>
+          <X strokeWidth={1.5} className="h-3.5 w-3.5" />
         }
       />
     </button>

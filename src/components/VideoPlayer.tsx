@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
+import { X } from "lucide-react";
 import { api } from "../lib/api";
 import type { MediaItem, OpenSubtitlesResult, Subtitle } from "../types";
 import { srtToVtt } from "../lib/srt";
@@ -352,9 +353,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
                         onClick={() => setCcMenuOpen(false)}
                         className="rounded p-0.5 text-zinc-400 hover:bg-white/10"
                       >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
-                          <path d="M18 6 6 18M6 6l12 12" />
-                        </svg>
+                        <X className="h-3.5 w-3.5" />
                       </button>
                     </div>
                     <div className="overflow-y-auto p-1">
@@ -475,9 +474,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
               onClick={handleClose}
               className="rounded-md p-1.5 text-zinc-300 hover:bg-white/10"
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
-                <path d="M18 6 6 18M6 6l12 12" />
-              </svg>
+              <X className="h-5 w-5" />
             </button>
           </div>
         </div>
